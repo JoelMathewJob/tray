@@ -1,0 +1,8 @@
+{
+  "name": "WinTray",
+  "version": "1.0.0",
+  "author": "Joel Mathew Job",
+  "repository": "JoelMathewJob/wintray",
+  "license": "MIT",
+  "description": "Dynamic Island floating tray for Windows"
+}

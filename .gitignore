@@ -1,0 +1,57 @@
+# Prerequisites / Compiled Files
+*.obj
+*.o
+*.lib
+*.a
+*.exp
+*.ilk
+*.pdb
+*.res
+
+# Executables
+*.exe
+*.dll
+*.so
+*.dylib
+
+# CMake Build Directories & Cache
+build/
+bin/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Auto-generated Build/Version Headers & Resources
+src/version_info.h
+version.rc
+
+# Windows / OS Temporary Files
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.tmp
+*.temp
+
+# Visual Studio / IDE Files
+.vs/
+*.sln.docstates
+*.suo
+*.user
+*.userosscache
+*.launch
+*.opendb
+*.db
+
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Local Configuration & Settings
+WinTray.ini
+*.ini
