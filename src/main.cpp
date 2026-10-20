@@ -10,7 +10,6 @@
 #include <cstdlib>
 #include <algorithm>
 
-// Global State Definitions
 HWND g_mainHwnd = nullptr;
 AppSettings g_settings;
 std::vector<PinnedItem> g_items;
@@ -26,6 +25,7 @@ static bool g_isTrackingDrag = false;
 static int g_dragCandidateIndex = -1;
 static bool g_isMenuOpen = false;
 static bool g_mouseTrackingActive = false;
+static bool g_isDraggingWindow = false;
 
 static RECT g_settingsBtnRect = {};
 static bool g_settingsHovered = false;
@@ -39,9 +39,16 @@ static float g_scrollOffset = 0.0f;
 static float g_targetScroll = 0.0f;
 static float g_maxScroll = 0.0f;
 
-// -------------------------------------------------------------
-// Core Tray Item & Sizing Helpers
-// -------------------------------------------------------------
+void ApplyGlobalHotkey(HWND hwnd)
+{
+    UnregisterHotKey(hwnd, HOTKEY_TOGGLE_ID);
+    BOOL registered = RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, g_settings.hotkeyMods | MOD_NOREPEAT, g_settings.hotkeyVk);
+    if (!registered)
+    {
+        RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'T');
+    }
+}
+
 void TriggerExpand(HWND hwnd)
 {
     if (!g_isExpanded)
@@ -55,30 +62,72 @@ void TriggerExpand(HWND hwnd)
 
 void CalculateTargetSize(bool expanded)
 {
+    bool isVertical = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
     if (expanded)
     {
         int pinnedCount = 0;
         int unpinnedCount = 0;
         for (const auto &item : g_items)
         {
-            if (item.isPinned) pinnedCount++;
-            else unpinnedCount++;
+            if (item.isPinned)
+                pinnedCount++;
+            else
+                unpinnedCount++;
         }
 
-        int itemWidth = g_settings.largeIcons ? 74 : 64;
-        int pinnedW = pinnedCount * itemWidth;
-        int unpinnedW = unpinnedCount * itemWidth;
-        int basePadding = 90 + ((pinnedCount > 0 && unpinnedCount > 0) ? 30 : 0);
+        int itemSize = g_settings.largeIcons ? 74 : 64;
+        int totalItems = pinnedCount + unpinnedCount;
+        int contentLen = std::max(460, totalItems * itemSize + 90);
+        float len = static_cast<float>(std::min(contentLen, 980));
+        float thick = g_settings.largeIcons ? 136.0f : 124.0f;
 
-        int contentWidth = std::max(460, pinnedW + unpinnedW + basePadding);
-        g_targetW = static_cast<float>(std::min(contentWidth, 980));
-        g_targetH = g_settings.largeIcons ? 136.0f : 124.0f;
+        g_targetW = isVertical ? thick : len;
+        g_targetH = isVertical ? len : thick;
     }
     else
     {
-        g_targetW = COLLAPSED_W;
-        g_targetH = COLLAPSED_H;
+        g_targetW = isVertical ? COLLAPSED_H : COLLAPSED_W;
+        g_targetH = isVertical ? COLLAPSED_W : COLLAPSED_H;
     }
+}
+
+void UpdateTrayWindowGeometry(HWND hwnd)
+{
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+    int w = static_cast<int>(std::lround(g_curW));
+    int h = static_cast<int>(std::lround(g_curH));
+    int posX = 0, posY = 0;
+
+    switch (g_settings.dockEdge)
+    {
+    case EDGE_TOP:
+        posX = std::clamp(static_cast<int>(screenW * g_settings.dockOffsetRatio - w / 2), 0, screenW - w);
+        posY = 0;
+        break;
+    case EDGE_LEFT:
+        posX = 0;
+        posY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, screenH - h);
+        break;
+    case EDGE_RIGHT:
+        posX = screenW - w;
+        posY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, screenH - h);
+        break;
+    }
+
+    SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, w, h, SWP_NOACTIVATE | SWP_NOREDRAW);
+
+    // Properly reset window region mask based on current active edge
+    HRGN hRgn = nullptr;
+    if (g_settings.dockEdge == EDGE_TOP) 
+        hRgn = CreateRoundRectRgn(0, 0, w + 1, h + 14, CORNER_RADIUS, CORNER_RADIUS);
+    else if (g_settings.dockEdge == EDGE_LEFT) 
+        hRgn = CreateRoundRectRgn(0, 0, w + 14, h + 1, CORNER_RADIUS, CORNER_RADIUS);
+    else 
+        hRgn = CreateRoundRectRgn(-14, 0, w + 1, h + 1, CORNER_RADIUS, CORNER_RADIUS);
+
+    SetWindowRgn(hwnd, hRgn, TRUE);
 }
 
 void PruneMissingItems(HWND hwnd)
@@ -89,7 +138,8 @@ void PruneMissingItems(HWND hwnd)
     {
         if (!it->isLoading && GetFileAttributesW(it->path.c_str()) == INVALID_FILE_ATTRIBUTES)
         {
-            if (it->icon) DestroyIcon(it->icon);
+            if (it->icon)
+                DestroyIcon(it->icon);
             it = g_items.erase(it);
             changed = true;
         }
@@ -109,7 +159,7 @@ void PruneMissingItems(HWND hwnd)
     }
 }
 
-int AddPlaceholderItem(const std::wstring& tempName)
+int AddPlaceholderItem(const std::wstring &tempName)
 {
     PinnedItem item;
     item.id = g_nextItemId++;
@@ -154,7 +204,8 @@ void DeleteSelectedItems(HWND hwnd)
     {
         if (it->isSelected)
         {
-            if (it->icon) DestroyIcon(it->icon);
+            if (it->icon)
+                DestroyIcon(it->icon);
             it = g_items.erase(it);
         }
         else
@@ -182,14 +233,14 @@ void TogglePinSelectedItems(HWND hwnd)
     }
     for (auto &item : g_items)
     {
-        if (item.isSelected) item.isPinned = hasUnpinned;
+        if (item.isSelected)
+            item.isPinned = hasUnpinned;
     }
     CalculateTargetSize(g_isExpanded);
     SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
     InvalidateRect(hwnd, nullptr, TRUE);
 }
 
-// Helper to draw a spinning loader indicator for downloading items
 void DrawLoadingSpinner(HDC hdc, int centerX, int centerY, int radius, float angleDeg)
 {
     HPEN trackPen = CreatePen(PS_SOLID, 3, RGB(55, 55, 68));
@@ -198,7 +249,6 @@ void DrawLoadingSpinner(HDC hdc, int centerX, int centerY, int radius, float ang
     Ellipse(hdc, centerX - radius, centerY - radius, centerX + radius, centerY + radius);
     DeleteObject(trackPen);
 
-    // Draw orbiting active dot on the ring
     float rad = angleDeg * 3.14159265f / 180.0f;
     int dotX = centerX + static_cast<int>(std::cos(rad) * radius);
     int dotY = centerY + static_cast<int>(std::sin(rad) * radius);
@@ -215,9 +265,6 @@ void DrawLoadingSpinner(HDC hdc, int centerX, int centerY, int radius, float ang
     DeleteObject(accentPen);
 }
 
-// -------------------------------------------------------------
-// Main Window Procedure
-// -------------------------------------------------------------
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -230,21 +277,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
         RegisterTrayDropTarget(hwnd);
         CalculateTargetSize(false);
-
-        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-        int posX = (screenWidth - static_cast<int>(COLLAPSED_W)) / 2;
-        SetWindowPos(hwnd, HWND_TOPMOST, posX, 0, static_cast<int>(COLLAPSED_W), static_cast<int>(COLLAPSED_H), SWP_NOACTIVATE);
+        UpdateTrayWindowGeometry(hwnd);
         return 0;
     }
 
     case WM_DOWNLOAD_COMPLETE:
     {
-        auto* res = reinterpret_cast<DownloadResult*>(lParam);
+        auto *res = reinterpret_cast<DownloadResult *>(lParam);
         if (res)
         {
-            auto it = std::find_if(g_items.begin(), g_items.end(), [&](const PinnedItem& item) {
-                return item.id == res->itemId;
-            });
+            auto it = std::find_if(g_items.begin(), g_items.end(), [&](const PinnedItem &item)
+                                   { return item.id == res->itemId; });
 
             if (it != g_items.end())
             {
@@ -320,7 +363,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             bool anyLoading = false;
             for (size_t i = 0; i < g_items.size(); ++i)
             {
-                if (g_items[i].isLoading) anyLoading = true;
+                if (g_items[i].isLoading)
+                    anyLoading = true;
                 float targetScale = (static_cast<int>(i) == g_hoveredIndex && g_isExpanded && g_settings.enableMagnify) ? 1.25f : 1.0f;
                 float diffScale = targetScale - g_items[i].currentScale;
                 if (std::fabs(diffScale) > 0.01f)
@@ -345,15 +389,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 KillTimer(hwnd, ANIM_TIMER_ID);
             }
 
-            int w = static_cast<int>(std::lround(g_curW));
-            int h = static_cast<int>(std::lround(g_curH));
-            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-            int posX = (screenWidth - w) / 2;
-
-            SetWindowPos(hwnd, HWND_TOPMOST, posX, 0, w, h, SWP_NOACTIVATE | SWP_NOREDRAW);
-
-            HRGN hRgn = CreateRoundRectRgn(0, -14, w + 1, h + 1, CORNER_RADIUS, CORNER_RADIUS);
-            SetWindowRgn(hwnd, hRgn, TRUE);
+            UpdateTrayWindowGeometry(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
@@ -375,6 +411,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
         int x = LOWORD(lParam);
         int y = HIWORD(lParam);
+
+        if (g_isDraggingWindow && (wParam & MK_LBUTTON))
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
+            if (g_settings.dockEdge == EDGE_TOP)
+                g_settings.dockOffsetRatio = std::clamp(static_cast<float>(pt.x) / screenW, 0.1f, 0.9f);
+            else
+                g_settings.dockOffsetRatio = std::clamp(static_cast<float>(pt.y) / screenH, 0.1f, 0.9f);
+            UpdateTrayWindowGeometry(hwnd);
+            return 0;
+        }
 
         if (!g_mouseTrackingActive)
         {
@@ -432,6 +481,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_settingsHovered = false;
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
+        g_isDraggingWindow = false;
 
         if (!g_isMenuOpen && g_isExpanded)
         {
@@ -476,8 +526,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 {
                     int startIdx = std::min(g_lastClickedIndex, i);
                     int endIdx = std::max(g_lastClickedIndex, i);
-                    if (!isCtrl) for (auto &item : g_items) item.isSelected = false;
-                    for (int k = startIdx; k <= endIdx; ++k) g_items[k].isSelected = true;
+                    if (!isCtrl)
+                        for (auto &item : g_items)
+                            item.isSelected = false;
+                    for (int k = startIdx; k <= endIdx; ++k)
+                        g_items[k].isSelected = true;
                 }
                 else if (isCtrl)
                 {
@@ -488,7 +541,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 {
                     if (!g_items[i].isSelected)
                     {
-                        for (auto &item : g_items) item.isSelected = false;
+                        for (auto &item : g_items)
+                            item.isSelected = false;
                         g_items[i].isSelected = true;
                     }
                     g_lastClickedIndex = i;
@@ -500,7 +554,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (!clickedAnItem)
         {
-            for (auto &item : g_items) item.isSelected = false;
+            g_isDraggingWindow = true;
+            SetCapture(hwnd);
+            for (auto &item : g_items)
+                item.isSelected = false;
             g_lastClickedIndex = -1;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
@@ -526,6 +583,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_LBUTTONUP:
+        if (g_isDraggingWindow)
+        {
+            g_isDraggingWindow = false;
+            ReleaseCapture();
+            SaveSettings();
+        }
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
         return 0;
@@ -552,7 +615,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             {
                 if (!(GetKeyState(VK_CONTROL) & 0x8000))
                 {
-                    for (auto &item : g_items) item.isSelected = false;
+                    for (auto &item : g_items)
+                        item.isSelected = false;
                 }
                 g_items[clickedIdx].isSelected = true;
                 g_lastClickedIndex = clickedIdx;
@@ -561,7 +625,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             int selectedCount = 0;
             for (const auto &it : g_items)
-                if (it.isSelected) selectedCount++;
+                if (it.isSelected)
+                    selectedCount++;
 
             HMENU hMenu = CreatePopupMenu();
             AppendMenuW(hMenu, MF_STRING, 1001, L"Open");
@@ -588,7 +653,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 for (const auto &item : g_items)
                 {
                     if (item.isSelected && !item.isLoading)
+                    {
                         ShellExecuteW(nullptr, L"open", item.path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                    }
                 }
             }
             else if (cmd == 1002 && !g_items[clickedIdx].isLoading)
@@ -596,9 +663,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 std::wstring params = L"/select,\"" + g_items[clickedIdx].path + L"\"";
                 ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
             }
-            else if (cmd == 1003) TogglePinSelectedItems(hwnd);
-            else if (cmd == 1004) CompressSelectedToZip(hwnd);
-            else if (cmd == 1005) DeleteSelectedItems(hwnd);
+            else if (cmd == 1003)
+            {
+                TogglePinSelectedItems(hwnd);
+            }
+            else if (cmd == 1004)
+            {
+                CompressSelectedToZip(hwnd);
+            }
+            else if (cmd == 1005)
+            {
+                DeleteSelectedItems(hwnd);
+            }
             return 0;
         }
         else
@@ -616,7 +692,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             DestroyMenu(hEmptyMenu);
             g_isMenuOpen = false;
 
-            if (cmd == 1010) HandleClipboardPaste(hwnd);
+            if (cmd == 1010)
+            {
+                HandleClipboardPaste(hwnd);
+            }
             else if (cmd == 1011)
             {
                 OpenSettingsDialog(hwnd);
@@ -638,11 +717,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             else
             {
                 ShowWindow(hwnd, SW_SHOW);
-                int w = static_cast<int>(std::lround(g_curW));
-                int h = static_cast<int>(std::lround(g_curH));
-                HRGN hRgn = CreateRoundRectRgn(0, -14, w + 1, h + 1, CORNER_RADIUS, CORNER_RADIUS);
-                SetWindowRgn(hwnd, hRgn, TRUE);
-                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                UpdateTrayWindowGeometry(hwnd);
                 InvalidateRect(hwnd, nullptr, TRUE);
             }
         }
@@ -666,59 +741,64 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
         HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
 
-        HBRUSH bgBrush = CreateSolidBrush(RGB(0, 0, 0));
+        // Slightly lighter background tint
+        HBRUSH bgBrush = CreateSolidBrush(RGB(24, 24, 30));
         FillRect(memDC, &clientRc, bgBrush);
         DeleteObject(bgBrush);
 
-        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(60, 60, 70));
+        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(75, 75, 90));
         HBRUSH nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
         SelectObject(memDC, borderPen);
         SelectObject(memDC, nullBrush);
-        RoundRect(memDC, 0, -14, width, height, CORNER_RADIUS, CORNER_RADIUS);
+        if (g_settings.dockEdge == EDGE_TOP)
+            RoundRect(memDC, 0, -14, width, height, CORNER_RADIUS, CORNER_RADIUS);
+        else if (g_settings.dockEdge == EDGE_LEFT)
+            RoundRect(memDC, -14, 0, width, height, CORNER_RADIUS, CORNER_RADIUS);
+        else
+            RoundRect(memDC, 0, 0, width + 14, height, CORNER_RADIUS, CORNER_RADIUS);
         DeleteObject(borderPen);
 
-        if (g_curH < 30.0f)
+        bool isVert = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
+
+        if ((g_curH < 30.0f && !isVert) || (g_curW < 30.0f && isVert) || !g_isExpanded)
         {
-            HBRUSH pillBrush = CreateSolidBrush(RGB(75, 75, 82));
+            HBRUSH pillBrush = CreateSolidBrush(RGB(140, 140, 155));
             SelectObject(memDC, pillBrush);
-            RoundRect(memDC, (width - 36) / 2, 4, (width + 36) / 2, 8, 4, 4);
+            if (!isVert)
+                RoundRect(memDC, (width - 45) / 2, 4, (width + 45) / 2, 8, 4, 4);
+            else
+                RoundRect(memDC, 4, (height - 45) / 2, 8, (height + 45) / 2, 4, 4);
             DeleteObject(pillBrush);
         }
         else
         {
-            g_settingsBtnRect = {width - 38, 12, width - 14, 36};
+            // Settings button anchored safely away from item rendering path
+            g_settingsBtnRect = isVert ? RECT{12, height - 38, width - 12, height - 14} : RECT{width - 38, 12, width - 14, 36};
+
             if (g_settingsHovered)
             {
-                HBRUSH gearHover = CreateSolidBrush(RGB(48, 48, 58));
-                HPEN gearPen = CreatePen(PS_SOLID, 1, RGB(80, 80, 95));
+                HBRUSH gearHover = CreateSolidBrush(RGB(58, 58, 68));
+                HPEN gearPen = CreatePen(PS_SOLID, 1, RGB(95, 95, 110));
                 SelectObject(memDC, gearHover);
                 SelectObject(memDC, gearPen);
                 RoundRect(memDC, g_settingsBtnRect.left, g_settingsBtnRect.top, g_settingsBtnRect.right, g_settingsBtnRect.bottom, 8, 8);
                 DeleteObject(gearHover);
                 DeleteObject(gearPen);
             }
-            HFONT gearFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                         CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-            HFONT oldGFont = (HFONT)SelectObject(memDC, gearFont);
+            HFONT gearFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
+            SelectObject(memDC, gearFont);
             SetBkMode(memDC, TRANSPARENT);
-            SetTextColor(memDC, g_settingsHovered ? RGB(255, 255, 255) : RGB(160, 160, 175));
+            SetTextColor(memDC, g_settingsHovered ? RGB(255, 255, 255) : RGB(180, 180, 195));
             DrawTextW(memDC, L"\x2699", -1, &g_settingsBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-            SelectObject(memDC, oldGFont);
             DeleteObject(gearFont);
 
             if (g_items.empty())
             {
-                HFONT hFont = CreateFontW(14, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Display");
+                HFONT hFont = CreateFontW(13, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
                 HFONT oldFont = (HFONT)SelectObject(memDC, hFont);
                 SetBkMode(memDC, TRANSPARENT);
-                SetTextColor(memDC, RGB(160, 160, 170));
-
-                RECT textRc = clientRc;
-                DrawTextW(memDC, L"Drop files, web media, or paste (Ctrl+V) here", -1, &textRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
+                SetTextColor(memDC, RGB(180, 180, 190));
+                DrawTextW(memDC, L"Drop files here", -1, &clientRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
                 SelectObject(memDC, oldFont);
                 DeleteObject(hFont);
             }
@@ -734,143 +814,129 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 std::vector<int> unpinnedIndices;
                 for (int i = 0; i < static_cast<int>(g_items.size()); ++i)
                 {
-                    if (g_items[i].isPinned) pinnedIndices.push_back(i);
-                    else unpinnedIndices.push_back(i);
+                    if (g_items[i].isPinned)
+                        pinnedIndices.push_back(i);
+                    else
+                        unpinnedIndices.push_back(i);
                 }
 
-                int currentX = 18;
-
-                HFONT hFont = CreateFontW(g_settings.largeIcons ? -12 : -11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                HFONT hFont = CreateFontW(g_settings.largeIcons ? -12 : -11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                SelectObject(memDC, hFont);
                 HFONT oldFont = (HFONT)SelectObject(memDC, hFont);
+
                 SetBkMode(memDC, TRANSPARENT);
 
-                auto renderItemCard = [&](int idx, int drawX, bool showPinBadge) {
+                // Professional item card rendering keeping zoom center-locked and name pill safely separated
+                auto renderItemCard = [&](int idx, int drawCoord, bool showPinBadge)
+                {
                     float scale = g_items[idx].currentScale;
                     int itemW = static_cast<int>(baseItemW * scale);
                     int itemH = static_cast<int>(baseItemH * scale);
-                    int shiftY = (itemH - baseItemH) / 2;
+                    int diffW = itemW - baseItemW;
 
-                    RECT pillRect = {drawX, startY - shiftY, drawX + itemW, startY + baseItemH + shiftY};
+                    RECT pillRect = isVert ? RECT{14, drawCoord - diffW / 2, 14 + baseItemW, drawCoord + baseItemH + diffW / 2} : RECT{drawCoord - diffW / 2, startY, drawCoord + baseItemW + diffW / 2, startY + baseItemH};
                     g_items[idx].rect = pillRect;
 
                     if (g_items[idx].isSelected)
                     {
-                        HBRUSH selBrush = CreateSolidBrush(RGB(10, 85, 175));
-                        HPEN borderSel = CreatePen(PS_SOLID, 1, RGB(45, 140, 245));
+                        HBRUSH selBrush = CreateSolidBrush(RGB(14, 100, 200));
                         SelectObject(memDC, selBrush);
-                        SelectObject(memDC, borderSel);
                         RoundRect(memDC, pillRect.left, pillRect.top, pillRect.right, pillRect.bottom, 12, 12);
                         DeleteObject(selBrush);
-                        DeleteObject(borderSel);
                     }
                     else if (idx == g_hoveredIndex)
                     {
-                        HBRUSH hoverBrush = CreateSolidBrush(RGB(40, 40, 48));
-                        HPEN borderPill = CreatePen(PS_SOLID, 1, RGB(70, 70, 85));
+                        HBRUSH hoverBrush = CreateSolidBrush(RGB(50, 50, 60));
                         SelectObject(memDC, hoverBrush);
-                        SelectObject(memDC, borderPill);
                         RoundRect(memDC, pillRect.left, pillRect.top, pillRect.right, pillRect.bottom, 12, 12);
                         DeleteObject(hoverBrush);
-                        DeleteObject(borderPill);
                     }
 
                     int iconSize = static_cast<int>(baseIconSize * scale);
-                    int iconX = drawX + (itemW - iconSize) / 2;
-                    int iconY = startY + 6 - shiftY;
+                    int iconX = pillRect.left + (pillRect.right - pillRect.left - iconSize) / 2;
+                    int iconY = pillRect.top + 6;
 
                     if (g_items[idx].isLoading)
-                    {
                         DrawLoadingSpinner(memDC, iconX + iconSize / 2, iconY + iconSize / 2, iconSize / 2 - 2, g_SpinnerAngle);
-                    }
                     else if (g_items[idx].icon)
                     {
                         DrawIconEx(memDC, iconX, iconY, g_items[idx].icon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
                         if (showPinBadge)
                         {
                             HBRUSH pinBadge = CreateSolidBrush(RGB(245, 158, 11));
-                            HPEN pinRing = CreatePen(PS_SOLID, 1, RGB(180, 100, 10));
                             SelectObject(memDC, pinBadge);
-                            SelectObject(memDC, pinRing);
                             RoundRect(memDC, iconX + iconSize - 8, iconY, iconX + iconSize + 2, iconY + 10, 3, 3);
                             DeleteObject(pinBadge);
-                            DeleteObject(pinRing);
                         }
                     }
 
-                    RECT textRc = {drawX + 2, startY + (g_settings.largeIcons ? 50 : 44) + shiftY, drawX + itemW - 2, startY + baseItemH - 6 + shiftY};
-                    SetTextColor(memDC, g_items[idx].isSelected ? RGB(255, 255, 255) : RGB(195, 195, 205));
+                    // Name pill label locked strictly underneath icon base area
+                    RECT textRc = {pillRect.left + 2, pillRect.top + (g_settings.largeIcons ? 50 : 44), pillRect.right - 2, pillRect.bottom - 4};
+                    SetTextColor(memDC, RGB(230, 230, 240));
                     DrawTextW(memDC, g_items[idx].name.c_str(), -1, &textRc, DT_SINGLELINE | DT_CENTER | DT_END_ELLIPSIS);
-                    return itemW;
+                    return baseItemW;
                 };
 
-                // --- SECTION 1: PINNED ITEMS ---
-                if (!pinnedIndices.empty())
+                int currentPos = 18;
+                for (int idx : pinnedIndices)
                 {
-                    for (int idx : pinnedIndices)
-                    {
-                        int itemW = renderItemCard(idx, currentX, true);
-                        currentX += itemW + itemSpacing;
-                    }
-
-                    if (!unpinnedIndices.empty())
-                    {
-                        HPEN divPen = CreatePen(PS_SOLID, 1, RGB(55, 55, 65));
-                        HPEN oldPen = (HPEN)SelectObject(memDC, divPen);
-                        MoveToEx(memDC, currentX + 6, startY + 8, nullptr);
-                        LineTo(memDC, currentX + 6, startY + baseItemH - 8);
-                        SelectObject(memDC, oldPen);
-                        DeleteObject(divPen);
-                        currentX += 20;
-                    }
+                    int w = renderItemCard(idx, currentPos - static_cast<int>(std::lround(g_scrollOffset)), true);
+                    currentPos += w + itemSpacing;
                 }
 
-                // --- SECTION 2: TEMPORARY ITEMS ---
-                if (!unpinnedIndices.empty())
+                if (!pinnedIndices.empty() && !unpinnedIndices.empty())
                 {
-                    int unpinnedStartX = currentX;
-                    int availableWidth = width - unpinnedStartX - 48;
-                    int totalUnpinnedW = static_cast<int>(unpinnedIndices.size()) * (baseItemW + itemSpacing);
-                    g_maxScroll = static_cast<float>(std::max(0, totalUnpinnedW - availableWidth));
-
-                    HRGN clipRgn = CreateRectRgn(unpinnedStartX - 4, startY - 8, width - 44, startY + baseItemH + 14);
-                    SelectClipRgn(memDC, clipRgn);
-
-                    int scrollX = unpinnedStartX - static_cast<int>(std::lround(g_scrollOffset));
-                    for (int idx : unpinnedIndices)
-                    {
-                        int itemW = renderItemCard(idx, scrollX, false);
-                        scrollX += itemW + itemSpacing;
+                    HPEN divPen = CreatePen(PS_SOLID, 1, RGB(65, 65, 80));
+                    HPEN oldPen = (HPEN)SelectObject(memDC, divPen);
+                    if (!isVert) {
+                        MoveToEx(memDC, currentPos + 4, startY + 8, nullptr);
+                        LineTo(memDC, currentPos + 4, startY + baseItemH - 8);
                     }
-
-                    SelectClipRgn(memDC, nullptr);
-                    DeleteObject(clipRgn);
-
-                    if (g_maxScroll > 0.0f)
-                    {
-                        int trackW = availableWidth;
-                        int thumbW = std::max(22, trackW * availableWidth / totalUnpinnedW);
-                        int thumbX = unpinnedStartX + static_cast<int>(std::lround((trackW - thumbW) * (g_scrollOffset / g_maxScroll)));
-
-                        HBRUSH thumbBrush = CreateSolidBrush(RGB(90, 90, 105));
-                        HPEN noPen = CreatePen(PS_NULL, 0, 0);
-                        SelectObject(memDC, thumbBrush);
-                        SelectObject(memDC, noPen);
-                        RoundRect(memDC, thumbX, startY + baseItemH + 12, thumbX + thumbW, startY + baseItemH + 15, 2, 2);
-                        DeleteObject(thumbBrush);
-                        DeleteObject(noPen);
-                    }
+                    SelectObject(memDC, oldPen);
+                    DeleteObject(divPen);
+                    currentPos += 16;
                 }
 
-                // --- HOVER TOOLTIP CARD ---
+                int unpinnedStartX = currentPos;
+                for (int idx : unpinnedIndices)
+                {
+                    int w = renderItemCard(idx, currentPos - static_cast<int>(std::lround(g_scrollOffset)), false);
+                    currentPos += w + itemSpacing;
+                }
+
+                int availableSpace = isVert ? (height - 48) : (width - unpinnedStartX - 48);
+                int totalContentLen = currentPos;
+                g_maxScroll = static_cast<float>(std::max(0, totalContentLen - availableSpace + 20));
+
+                // Render Scrollbar if content overflows
+                if (g_maxScroll > 0.0f)
+                {
+                    int trackLen = availableSpace;
+                    int thumbLen = std::max(22, trackLen * availableSpace / totalContentLen);
+                    int thumbOffset = static_cast<int>(std::lround((trackLen - thumbLen) * (g_scrollOffset / g_maxScroll)));
+
+                    HBRUSH thumbBrush = CreateSolidBrush(RGB(110, 110, 125));
+                    HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                    SelectObject(memDC, thumbBrush);
+                    SelectObject(memDC, noPen);
+
+                    if (!isVert)
+                    {
+                        RoundRect(memDC, unpinnedStartX + thumbOffset, height - 6, unpinnedStartX + thumbOffset + thumbLen, height - 3, 2, 2);
+                    }
+                    else
+                    {
+                        RoundRect(memDC, width - 6, unpinnedStartX + thumbOffset, width - 3, unpinnedStartX + thumbOffset + thumbLen, 2, 2);
+                    }
+                    DeleteObject(thumbBrush);
+                    DeleteObject(noPen);
+                }
+
+                // Hover Tooltip Card
                 if (g_hoveredIndex >= 0 && g_hoveredIndex < static_cast<int>(g_items.size()))
                 {
                     const auto &item = g_items[g_hoveredIndex];
-
-                    HFONT tipFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+                    HFONT tipFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
                     SelectObject(memDC, tipFont);
 
                     RECT calcRc = {0, 0, 0, 0};
@@ -893,7 +959,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     RECT labelRc = {tipX, tipY, tipX + tipWidth, tipY + tipHeight};
                     SetTextColor(memDC, RGB(255, 255, 255));
                     DrawTextW(memDC, item.name.c_str(), -1, &labelRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
                     DeleteObject(tipFont);
                 }
 
@@ -915,7 +980,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         KillTimer(hwnd, ANIM_TIMER_ID);
         for (auto &item : g_items)
         {
-            if (item.icon) DestroyIcon(item.icon);
+            if (item.icon)
+                DestroyIcon(item.icon);
         }
         PostQuitMessage(0);
         return 0;
@@ -939,28 +1005,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     RegisterClass(&wc);
 
-    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    int posX = (screenWidth - static_cast<int>(COLLAPSED_W)) / 2;
+    InitSettingsPath();
+    LoadSettings();
 
     HWND hwnd = CreateWindowEx(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         CLASS_NAME,
         L"WinTray",
         WS_POPUP | WS_VISIBLE,
-        posX, 0, static_cast<int>(COLLAPSED_W), static_cast<int>(COLLAPSED_H),
+        100, 100, static_cast<int>(COLLAPSED_LENGTH), static_cast<int>(COLLAPSED_THICKNESS),
         nullptr, nullptr, hInstance, nullptr);
 
     if (!hwnd)
         return 0;
 
-    BOOL registered = RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, MOD_WIN | MOD_ALT | MOD_NOREPEAT, 'T');
-    if (!registered)
-    {
-        RegisterHotKey(hwnd, HOTKEY_TOGGLE_ID, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'T');
-    }
-
-    HRGN hRgn = CreateRoundRectRgn(0, -14, static_cast<int>(COLLAPSED_W) + 1, static_cast<int>(COLLAPSED_H) + 1, CORNER_RADIUS, CORNER_RADIUS);
-    SetWindowRgn(hwnd, hRgn, TRUE);
+    ApplyGlobalHotkey(hwnd);
+    UpdateTrayWindowGeometry(hwnd);
 
     MSG msg = {};
     while (GetMessage(&msg, nullptr, 0, 0))

@@ -5,10 +5,19 @@
 
 constexpr float COLLAPSED_W = 220.0f;
 constexpr float COLLAPSED_H = 16.0f;
+constexpr float COLLAPSED_LENGTH = 220.0f;
+constexpr float COLLAPSED_THICKNESS = 16.0f;
 constexpr int CORNER_RADIUS = 28;
 constexpr UINT_PTR ANIM_TIMER_ID = 42;
 constexpr int HOTKEY_TOGGLE_ID = 9001;
 constexpr UINT WM_DOWNLOAD_COMPLETE = WM_USER + 105;
+
+enum DockEdge
+{
+    EDGE_TOP = 0,
+    EDGE_RIGHT = 1,
+    EDGE_LEFT = 2
+};
 
 struct AppSettings
 {
@@ -18,8 +27,8 @@ struct AppSettings
     bool largeIcons = false;
     int hotkeyMods = MOD_WIN | MOD_ALT;
     int hotkeyVk = 'T';
-    int posX = -1; // -1 means center
-    int posY = 0;
+    int dockEdge = EDGE_TOP;
+    float dockOffsetRatio = 0.5f;
 };
 
 struct PinnedItem
@@ -43,20 +52,17 @@ struct DownloadResult
     std::wstring displayName;
 };
 
-// Global Shared State
 extern HWND g_mainHwnd;
 extern AppSettings g_settings;
 extern std::vector<PinnedItem> g_items;
 extern bool g_isExpanded;
 extern bool g_isSelfDragging;
 extern float g_SpinnerAngle;
-extern bool g_isDraggingWindow;
-extern POINT g_windowDragOffset;
 
-// Core UI Helpers
 void CalculateTargetSize(bool expanded);
 void PruneMissingItems(HWND hwnd);
 void TriggerExpand(HWND hwnd);
 int AddPlaceholderItem(const std::wstring& tempName);
 void AddFileToTray(const std::wstring& filePath, bool isPinned = false);
 void ApplyGlobalHotkey(HWND hwnd);
+void UpdateTrayWindowGeometry(HWND hwnd);
