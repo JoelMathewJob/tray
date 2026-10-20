@@ -1,0 +1,27 @@
+name: Build and Release WinTray
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers automatically whenever you push a tag starting with 'v' (e.g., git tag v1.0.1)
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: cmake -B build -A x64
+
+    - name: Build Release Binary
+      run: cmake --build build --config Release
+
+    - name: Upload Release Asset
+      uses: softprops/action-gh-release@v2
+      with:
+        files: build/Release/WinTray.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
