@@ -24,7 +24,7 @@ cmake_install.cmake
 Makefile
 
 # Auto-generated Build/Version Headers & Resources
-src/version_info.h
+# src/version_info.h
 version.rc
 
 # Windows / OS Temporary Files

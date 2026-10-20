@@ -11,7 +11,6 @@ string(JSON APP_VERSION GET "${MANIFEST_RAW}" version)
 string(JSON APP_AUTHOR GET "${MANIFEST_RAW}" author)
 string(JSON APP_REPO GET "${MANIFEST_RAW}" repository)
 
-# Split version string (e.g. "1.0.0" -> 1, 0, 0)
 string(REPLACE "." ";" VERSION_PARTS "${APP_VERSION}")
 list(GET VERSION_PARTS 0 VERSION_MAJOR)
 list(GET VERSION_PARTS 1 VERSION_MINOR)
@@ -37,9 +36,16 @@ inline const std::wstring APP_AUTHOR      = L\"${APP_AUTHOR}\";
 )
 file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/src/version_info.h" "${VERSION_HEADER}")
 
-# 4. Target definition
+# 4. Modular Target Sources
 set(SOURCES
     src/main.cpp
+    src/state.h
+    src/settings.h
+    src/settings.cpp
+    src/updater.h
+    src/updater.cpp
+    src/media.h
+    src/media.cpp
     src/appbar.h
     src/appbar.cpp
     src/blur.h
@@ -50,7 +56,6 @@ set(SOURCES
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES})
 
-# Static runtime linking (/MT)
 set_property(TARGET ${PROJECT_NAME} PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
@@ -63,6 +68,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Msimg32
     Wininet
     Comctl32
+    Crypt32
+    Gdi32
     d2d1
     dwrite
 )
