@@ -63,6 +63,11 @@ void CalculateTargetSize(bool expanded);
 void PruneMissingItems(HWND hwnd);
 void TriggerExpand(HWND hwnd);
 int AddPlaceholderItem(const std::wstring& tempName);
-void AddFileToTray(const std::wstring& filePath, bool isPinned = false);
+void AddFileToTray(const std::wstring& filePath, bool isPinned = false, const std::wstring& customName = L"");
 void ApplyGlobalHotkey(HWND hwnd);
 void UpdateTrayWindowGeometry(HWND hwnd);
+
+// Temp folder lifecycle helpers
+std::wstring GetWinTrayTempDir();
+void DeleteTempFileIfOwned(const std::wstring& filePath);
+void CleanupOldTempFiles(int maxAgeDays = 3);
