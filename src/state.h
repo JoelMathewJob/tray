@@ -29,6 +29,12 @@ struct AppSettings
     int hotkeyVk = 'T';
     int dockEdge = EDGE_TOP;
     float dockOffsetRatio = 0.5f;
+    int themeMode = 0; // 0 = System, 1 = Light, 2 = Dark
+};
+
+struct ThemePalette {
+    COLORREF border, textPrimary, textSec, pillHover, pillBorder;
+    COLORREF selBg, selBorder, tipBg, div, scrollTrack, scrollThumb;
 };
 
 struct PinnedItem
@@ -58,6 +64,7 @@ extern std::vector<PinnedItem> g_items;
 extern bool g_isExpanded;
 extern bool g_isSelfDragging;
 extern float g_SpinnerAngle;
+extern ThemePalette g_theme;
 
 void CalculateTargetSize(bool expanded);
 void PruneMissingItems(HWND hwnd);
@@ -66,6 +73,8 @@ int AddPlaceholderItem(const std::wstring& tempName);
 void AddFileToTray(const std::wstring& filePath, bool isPinned = false, const std::wstring& customName = L"");
 void ApplyGlobalHotkey(HWND hwnd);
 void UpdateTrayWindowGeometry(HWND hwnd);
+void UpdateThemeColors();
+bool IsResolvedDarkMode();
 
 // Temp folder lifecycle helpers
 std::wstring GetWinTrayTempDir();

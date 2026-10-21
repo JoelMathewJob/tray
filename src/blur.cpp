@@ -1,4 +1,5 @@
 ﻿#include "blur.h"
+#include "state.h" // Needed to check current theme
 #include <dwmapi.h>
 
 #pragma comment(lib, "Dwmapi.lib")
@@ -13,28 +14,25 @@ void ApplyWindowBackdrop(HWND hwnd, BackdropType type) {
     MARGINS margins = { -1, -1, -1, -1 };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-    BOOL darkMode = TRUE;
+    // Dynamically apply Dark or Light immersive glass
+    BOOL darkMode = IsResolvedDarkMode() ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
 
-    // Enforce native Windows 11 hardware-accelerated rounded corners
     DWORD cornerPref = 2; // DWMWCP_ROUND
     DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &cornerPref, sizeof(cornerPref));
 
-    HMODULE hUser = GetModuleHandleW(L"user32.dll");
-    if (hUser) {
-        auto SetWindowCompositionAttribute = 
-            (pfnSetWindowCompositionAttribute)GetProcAddress(hUser, "SetWindowCompositionAttribute");
-        
-        if (SetWindowCompositionAttribute) {
-            ACCENT_POLICY policy = {};
-            policy.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND;
-            policy.AccentFlags = 2;
-            
-            // Your original dark glass tint
-            policy.GradientColor = 0x40121214;
+    DWORD backdropType = 3; // DWMSBT_ACRYLIC
+    HRESULT hr = DwmSetWindowAttribute(hwnd, 38, &backdropType, sizeof(backdropType));
 
-            WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-            SetWindowCompositionAttribute(hwnd, &data);
+    if (FAILED(hr)) {
+        HMODULE hUser = GetModuleHandleW(L"user32.dll");
+        if (hUser) {
+            auto SetWindowCompositionAttribute = (pfnSetWindowCompositionAttribute)GetProcAddress(hUser, "SetWindowCompositionAttribute");
+            if (SetWindowCompositionAttribute) {
+                ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, 0x00000000, 0 };
+                WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
+                SetWindowCompositionAttribute(hwnd, &data);
+            }
         }
     }
 }
