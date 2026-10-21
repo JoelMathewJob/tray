@@ -118,9 +118,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         SendMessageW(hChkMove, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkMove, BM_SETCHECK, g_settings.moveFiles ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hChkRemove = CreateWindowW(L"BUTTON", L"Automatically remove files after drag-out", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 138, 310, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_AUTOREMOVE, nullptr, nullptr);
-        SendMessageW(hChkRemove, WM_SETFONT, (WPARAM)hFont, TRUE);
-        SendMessageW(hChkRemove, BM_SETCHECK, g_settings.autoRemoveUnpinned ? BST_CHECKED : BST_UNCHECKED, 0);
+        // HWND hChkRemove = CreateWindowW(L"BUTTON", L"Automatically remove files after drag-out", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 138, 310, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_AUTOREMOVE, nullptr, nullptr);
+        // SendMessageW(hChkRemove, WM_SETFONT, (WPARAM)hFont, TRUE);
+        // SendMessageW(hChkRemove, BM_SETCHECK, g_settings.autoRemoveUnpinned ? BST_CHECKED : BST_UNCHECKED, 0);
 
         HWND hGroup2 = CreateWindowW(L"BUTTON", L" Global Toggle Shortcut ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 182, 340, 75, hwnd, nullptr, nullptr, nullptr);
         SendMessageW(hGroup2, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -172,6 +172,13 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if (id == ID_BTN_UPDATE) CheckForUpdates(hwnd);
         else if (id == ID_BTN_CLOSE)
         {
+            // CRITICAL FIX: Read checkbox states and update memory BEFORE saving
+            g_settings.moveFiles = (IsDlgButtonChecked(hwnd, ID_CHK_MOVE) == BST_CHECKED);
+            g_settings.autoRemoveUnpinned = (IsDlgButtonChecked(hwnd, ID_CHK_AUTOREMOVE) == BST_CHECKED);
+            
+            bool enableStartup = (IsDlgButtonChecked(hwnd, ID_CHK_STARTUP) == BST_CHECKED);
+            SetAutoStart(enableStartup);
+
             HWND hEdgeCb = GetDlgItem(hwnd, ID_CB_EDGE);
             g_settings.dockEdge = static_cast<int>(SendMessageW(hEdgeCb, CB_GETCURSEL, 0, 0));
 
@@ -195,6 +202,8 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             UpdateTrayWindowGeometry(g_mainHwnd);
             DestroyWindow(hwnd);
         }
+       
+       
         return 0;
     }
     case WM_CLOSE:

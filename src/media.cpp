@@ -1122,20 +1122,23 @@ void StartDraggingSelectedOut(HWND hwnd, int clickedIdx)
     g_isSelfDragging = true;
     RevokeTrayDropTarget(hwnd);
 
-    // Always allow COPY so web browsers don't reject the drag
-    DWORD dropEffect = DROPEFFECT_COPY | (g_settings.moveFiles ? DROPEFFECT_MOVE : 0);
-    auto *dataObj = new MultiFileDataObject(pathsToDrag, dropEffect);
+    // CRITICAL FIX: Preferred effect MUST be exactly 1 (COPY) or 2 (MOVE).
+    // Passing a bitwise OR causes Windows Explorer to default to Copying.
+    DWORD prefDropEffect = g_settings.moveFiles ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+    auto *dataObj = new MultiFileDataObject(pathsToDrag, prefDropEffect);
     auto *dropSrc = new SimpleDropSource();
 
     DWORD dwEffectResult = 0;
+    // Pass standard allowed effects to DoDragDrop so web browsers still accept the drag
     HRESULT hr = DoDragDrop(dataObj, dropSrc, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &dwEffectResult);
 
     dataObj->Release();
     dropSrc->Release();
 
-    if (hr == DRAGDROP_S_DROP && (dwEffectResult & (DROPEFFECT_COPY | DROPEFFECT_MOVE)))
+    if (hr == DRAGDROP_S_DROP && (dwEffectResult & (DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK)))
     {
-        if (g_settings.autoRemoveUnpinned || (dwEffectResult & DROPEFFECT_MOVE))
+        // Remove item from Tray UI if dropped successfully and auto-remove or move is true
+        if (g_settings.autoRemoveUnpinned || (dwEffectResult & DROPEFFECT_MOVE) || g_settings.moveFiles)
         {
             std::vector<std::wstring> toRemove;
             for (int idx : indicesToDrag)
@@ -1151,11 +1154,8 @@ void StartDraggingSelectedOut(HWND hwnd, int clickedIdx)
                 {
                     if (it->icon) DestroyIcon(it->icon);
                     
-                    // CRITICAL FIX: Do NOT call DeleteTempFileIfOwned(it->path) here!
-                    // Browsers read dropped files asynchronously. If we delete the physical file 
-                    // instantly, the browser's upload fails. CleanupOldTempFiles(3) will handle 
-                    // deleting the physical file in the background safely on next launch.
-                    
+                    // Note: If dropped in Explorer and moveFiles is true, Explorer already physically moved the file natively!
+                    // We just erase it from the tray UI.
                     g_items.erase(it);
                 }
             }
@@ -1168,6 +1168,7 @@ void StartDraggingSelectedOut(HWND hwnd, int clickedIdx)
     g_isSelfDragging = false;
     InvalidateRect(hwnd, nullptr, TRUE);
 }
+
 
 void CompressSelectedToZip(HWND hwnd)
 {
