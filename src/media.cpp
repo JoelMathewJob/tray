@@ -8,33 +8,181 @@
 #include <thread>
 #include <vector>
 #include <string>
+#include <sstream>
 
 #pragma comment(lib, "Crypt32.lib")
+
+// -------------------------------------------------------------
+// Temp Directory & Lifecycle Management
+// -------------------------------------------------------------
+std::wstring GetWinTrayTempDir()
+{
+    wchar_t tempDir[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempDir);
+    std::wstring outDir = std::wstring(tempDir) + L"WinTray_Web";
+    CreateDirectoryW(outDir.c_str(), nullptr);
+    return outDir;
+}
+
+void DeleteTempFileIfOwned(const std::wstring& filePath)
+{
+    if (filePath.empty()) return;
+    std::wstring tempDir = GetWinTrayTempDir();
+    if (filePath.length() > tempDir.length() &&
+        _wcsnicmp(filePath.c_str(), tempDir.c_str(), tempDir.length()) == 0)
+    {
+        DeleteFileW(filePath.c_str());
+    }
+}
+
+void CleanupOldTempFiles(int maxAgeDays)
+{
+    std::wstring tempDir = GetWinTrayTempDir();
+    std::wstring searchPattern = tempDir + L"\\*.*";
+
+    WIN32_FIND_DATAW fd = {};
+    HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &fd);
+    if (hFind == INVALID_HANDLE_VALUE) return;
+
+    FILETIME ftNow;
+    GetSystemTimeAsFileTime(&ftNow);
+    ULARGE_INTEGER ullNow;
+    ullNow.LowPart = ftNow.dwLowDateTime;
+    ullNow.HighPart = ftNow.dwHighDateTime;
+
+    // 100-nanosecond intervals in 1 day = 24 * 60 * 60 * 10,000,000
+    const ULONGLONG intervalsPerDay = 864000000000ULL;
+    const ULONGLONG maxAgeIntervals = static_cast<ULONGLONG>(maxAgeDays) * intervalsPerDay;
+
+    do
+    {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+        {
+            ULARGE_INTEGER ullFile;
+            ullFile.LowPart = fd.ftLastWriteTime.dwLowDateTime;
+            ullFile.HighPart = fd.ftLastWriteTime.dwHighDateTime;
+
+            if (ullNow.QuadPart > ullFile.QuadPart &&
+                (ullNow.QuadPart - ullFile.QuadPart) > maxAgeIntervals)
+            {
+                std::wstring fullPath = tempDir + L"\\" + fd.cFileName;
+                DeleteFileW(fullPath.c_str());
+            }
+        }
+    } while (FindNextFileW(hFind, &fd));
+
+    FindClose(hFind);
+}
+
+// -------------------------------------------------------------
+// Helper: Save Pasted/Dropped Text to Temp (Deduplicated via Hash)
+// -------------------------------------------------------------
+std::wstring SaveTextToTemp(const std::wstring& text)
+{
+    std::wstring trimmed = text;
+    size_t first = trimmed.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return L"";
+    size_t last = trimmed.find_last_not_of(L" \t\r\n");
+    trimmed = trimmed.substr(first, last - first + 1);
+
+    // Deterministic hash prevents duplicate files for identical text
+    size_t textHash = std::hash<std::wstring>{}(trimmed);
+
+    std::wstring snippet = trimmed.substr(0, std::min<size_t>(trimmed.length(), 16));
+    for (auto& ch : snippet)
+    {
+        if (wcschr(L"<>:\"/\\|?*\r\n\t ", ch) || ch < 32) ch = L'_';
+    }
+    if (snippet.empty()) snippet = L"Note";
+
+    std::wstring outDir = GetWinTrayTempDir();
+    std::wstring outPath = outDir + L"\\Text_" + snippet + L"_" + std::to_wstring(textHash % 1000000) + L".txt";
+
+    // If non-duplicate already exists on disk, return its path directly
+    if (GetFileAttributesW(outPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+    {
+        return outPath;
+    }
+
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (utf8Len <= 0) return L"";
+
+    std::string utf8Str(utf8Len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &utf8Str[0], utf8Len, nullptr, nullptr);
+
+    HANDLE hFile = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return L"";
+
+    DWORD written = 0;
+    WriteFile(hFile, utf8Str.data(), static_cast<DWORD>(utf8Str.size()), &written, nullptr);
+    CloseHandle(hFile);
+
+    return outPath;
+}
 
 // -------------------------------------------------------------
 // Helper: URL Decode (Converts %20 -> space for VS Code file:/// URIs)
 // -------------------------------------------------------------
 std::wstring UrlDecode(const std::wstring& str)
 {
-    std::wstring ret;
-    ret.reserve(str.length());
+    std::string utf8Raw;
     for (size_t i = 0; i < str.length(); ++i)
     {
         if (str[i] == L'%' && i + 2 < str.length())
         {
             wchar_t hex[3] = { str[i + 1], str[i + 2], 0 };
             wchar_t* endPtr = nullptr;
-            wchar_t decoded = static_cast<wchar_t>(wcstol(hex, &endPtr, 16));
+            char decoded = static_cast<char>(wcstol(hex, &endPtr, 16));
             if (endPtr == hex + 2)
             {
-                ret += decoded;
+                utf8Raw += decoded;
                 i += 2;
                 continue;
             }
         }
-        ret += str[i];
+        int len = WideCharToMultiByte(CP_UTF8, 0, &str[i], 1, nullptr, 0, nullptr, nullptr);
+        if (len > 0)
+        {
+            std::string chStr(len, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, &str[i], 1, &chStr[0], len, nullptr, nullptr);
+            utf8Raw += chStr;
+        }
     }
-    return ret;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Raw.c_str(), -1, nullptr, 0);
+    if (wlen > 1)
+    {
+        std::wstring wret(wlen - 1, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8Raw.c_str(), -1, &wret[0], wlen);
+        return wret;
+    }
+    return str;
+}
+
+// -------------------------------------------------------------
+// Helper: Parse local file path or file:/// URI
+// -------------------------------------------------------------
+std::wstring ResolveLocalFileUri(const std::wstring& input)
+{
+    std::wstring clean = input;
+    size_t first = clean.find_first_not_of(L" \t\r\n\"'");
+    if (first == std::wstring::npos) return L"";
+    size_t last = clean.find_last_not_of(L" \t\r\n\"'");
+    clean = clean.substr(first, last - first + 1);
+
+    if (clean.rfind(L"file:///", 0) == 0)
+    {
+        std::wstring localPath = UrlDecode(clean.substr(8));
+        for (auto& ch : localPath) if (ch == L'/') ch = L'\\';
+        if (localPath.length() >= 3 && localPath[0] == L'\\' && localPath[2] == L':')
+            localPath = localPath.substr(1);
+        if (GetFileAttributesW(localPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+            return localPath;
+    }
+    else if (GetFileAttributesW(clean.c_str()) != INVALID_FILE_ATTRIBUTES)
+    {
+        return clean;
+    }
+    return L"";
 }
 
 // -------------------------------------------------------------
@@ -55,6 +203,8 @@ std::wstring DetectExtensionFromBytes(const BYTE* data, size_t len, const std::w
         return L".bmp";
     if (len >= 4 && data[0] == '%' && data[1] == 'P' && data[2] == 'D' && data[3] == 'F')
         return L".pdf";
+    if (len >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04)
+        return fallbackExt.empty() ? L".zip" : fallbackExt;
     if (len >= 12 && data[4] == 'f' && data[5] == 't' && data[6] == 'y' && data[7] == 'p')
         return L".mp4";
 
@@ -118,11 +268,7 @@ std::wstring SaveHBitmapToTemp(HBITMAP hBmp)
 {
     if (!hBmp) return L"";
 
-    wchar_t tempDir[MAX_PATH];
-    GetTempPathW(MAX_PATH, tempDir);
-    std::wstring outDir = std::wstring(tempDir) + L"WinTray_Web";
-    CreateDirectoryW(outDir.c_str(), nullptr);
-
+    std::wstring outDir = GetWinTrayTempDir();
     std::wstring outPath = outDir + L"\\Image_" + std::to_wstring(GetTickCount64()) + L".bmp";
 
     BITMAP bmp = {};
@@ -163,20 +309,16 @@ std::wstring SaveHBitmapToTemp(HBITMAP hBmp)
 }
 
 // -------------------------------------------------------------
-// Background Worker: Asynchronous Web Media / Base64 Downloader
+// Background Worker: Asynchronous Web Media / Gmail / Base64 Downloader
 // -------------------------------------------------------------
-void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
+void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd, const std::wstring& suggestedFileName = L"")
 {
-    int itemId = AddPlaceholderItem(L"Downloading...");
+    int itemId = AddPlaceholderItem(suggestedFileName.empty() ? L"Downloading..." : suggestedFileName);
 
-    std::thread([url, itemId, notifyHwnd]() {
-        wchar_t tempDir[MAX_PATH];
-        GetTempPathW(MAX_PATH, tempDir);
-        std::wstring outDir = std::wstring(tempDir) + L"WinTray_Web";
-        CreateDirectoryW(outDir.c_str(), nullptr);
-
+    std::thread([url, itemId, notifyHwnd, suggestedFileName]() {
+        std::wstring outDir = GetWinTrayTempDir();
         std::wstring finalPath = L"";
-        std::wstring displayName = L"";
+        std::wstring displayName = suggestedFileName;
         bool success = false;
 
         // Case 1: Base64 Data URI (data:image/png;base64,...)
@@ -194,7 +336,8 @@ void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
                     if (CryptStringToBinaryW(b64Wide.c_str(), 0, CRYPT_STRING_BASE64, buffer.data(), &binLen, nullptr, nullptr))
                     {
                         std::wstring ext = DetectExtensionFromBytes(buffer.data(), binLen, L".png");
-                        displayName = L"WebImage_" + std::to_wstring(GetTickCount64() % 10000) + ext;
+                        if (displayName.empty())
+                            displayName = L"WebImage_" + std::to_wstring(GetTickCount64() % 10000) + ext;
                         finalPath = outDir + L"\\" + displayName;
 
                         HANDLE hFile = CreateFileW(finalPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -209,19 +352,20 @@ void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
                 }
             }
         }
-        // Case 2: Standard HTTP / HTTPS URL
+        // Case 2: Standard HTTP / HTTPS URL (including Gmail attachment URLs)
         else if (url.rfind(L"http://", 0) == 0 || url.rfind(L"https://", 0) == 0)
         {
             HINTERNET hInternet = InternetOpenW(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
             if (hInternet)
             {
-                DWORD timeoutMs = 15000;
+                DWORD timeoutMs = 20000;
                 InternetSetOptionW(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
                 InternetSetOptionW(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
 
+                // Do NOT pass INTERNET_FLAG_NO_COOKIES so WinINet shares session cookies if available
                 HINTERNET hFile = InternetOpenUrlW(
                     hInternet, url.c_str(),
-                    L"Accept: image/avif,image/webp,image/apng,image/*,video/*,*/*;q=0.8\r\n",
+                    L"Accept: */*\r\n",
                     -1, INTERNET_FLAG_RELOAD | INTERNET_FLAG_SECURE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID, 0);
 
                 if (hFile)
@@ -233,7 +377,7 @@ void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
                     while (InternetReadFile(hFile, chunk, sizeof(chunk), &bytesRead) && bytesRead > 0)
                     {
                         fileBuffer.insert(fileBuffer.end(), chunk, chunk + bytesRead);
-                        if (fileBuffer.size() > 150 * 1024 * 1024) break;
+                        if (fileBuffer.size() > 200 * 1024 * 1024) break;
                     }
 
                     InternetCloseHandle(hFile);
@@ -242,36 +386,55 @@ void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
                     {
                         std::wstring baseName = L"media";
                         std::wstring urlExt = L"";
-                        size_t slashPos = url.find_last_of(L"/\\");
-                        if (slashPos != std::wstring::npos && slashPos + 1 < url.length())
+
+                        if (!suggestedFileName.empty())
                         {
-                            std::wstring rawName = url.substr(slashPos + 1);
-                            size_t qPos = rawName.find_first_of(L"?#&");
-                            if (qPos != std::wstring::npos) rawName = rawName.substr(0, qPos);
-
-                            for (auto& ch : rawName)
-                            {
-                                if (wcschr(L"<>:\"/\\|?*", ch)) ch = L'_';
-                            }
-
-                            size_t dotPos = rawName.find_last_of(L'.');
+                            std::wstring cleanSug = suggestedFileName;
+                            for (auto& ch : cleanSug) if (wcschr(L"<>:\"/\\|?*", ch)) ch = L'_';
+                            size_t dotPos = cleanSug.find_last_of(L'.');
                             if (dotPos != std::wstring::npos)
                             {
-                                baseName = rawName.substr(0, dotPos);
-                                urlExt = rawName.substr(dotPos);
+                                baseName = cleanSug.substr(0, dotPos);
+                                urlExt = cleanSug.substr(dotPos);
                             }
-                            else if (!rawName.empty())
+                            else
                             {
-                                baseName = rawName;
+                                baseName = cleanSug;
+                            }
+                        }
+                        else
+                        {
+                            size_t slashPos = url.find_last_of(L"/\\");
+                            if (slashPos != std::wstring::npos && slashPos + 1 < url.length())
+                            {
+                                std::wstring rawName = url.substr(slashPos + 1);
+                                size_t qPos = rawName.find_first_of(L"?#&");
+                                if (qPos != std::wstring::npos) rawName = rawName.substr(0, qPos);
+
+                                for (auto& ch : rawName)
+                                {
+                                    if (wcschr(L"<>:\"/\\|?*", ch)) ch = L'_';
+                                }
+
+                                size_t dotPos = rawName.find_last_of(L'.');
+                                if (dotPos != std::wstring::npos)
+                                {
+                                    baseName = rawName.substr(0, dotPos);
+                                    urlExt = rawName.substr(dotPos);
+                                }
+                                else if (!rawName.empty())
+                                {
+                                    baseName = rawName;
+                                }
                             }
                         }
 
                         if (baseName.empty()) baseName = L"web_item";
-                        if (baseName.length() > 32) baseName = baseName.substr(0, 32);
+                        if (baseName.length() > 40) baseName = baseName.substr(0, 40);
 
                         std::wstring realExt = DetectExtensionFromBytes(fileBuffer.data(), fileBuffer.size(), urlExt);
 
-                        if (realExt == L".html")
+                        if (realExt == L".html" && suggestedFileName.empty())
                         {
                             displayName = baseName + L".url";
                             finalPath = outDir + L"\\" + std::to_wstring(GetTickCount64() % 100000) + L"_" + displayName;
@@ -295,8 +458,8 @@ void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
                         }
                         else
                         {
-                            displayName = baseName + realExt;
-                            finalPath = outDir + L"\\" + std::to_wstring(GetTickCount64() % 100000) + L"_" + displayName;
+                            displayName = baseName + (urlExt.empty() ? realExt : urlExt);
+                            finalPath = outDir + L"\\" + std::to_wstring(GetTickCount64()) + L"_" + displayName;
 
                             HANDLE hOut = CreateFileW(finalPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
                             if (hOut != INVALID_HANDLE_VALUE)
@@ -319,7 +482,7 @@ void StartAsyncWebDownload(const std::wstring& url, HWND notifyHwnd)
 }
 
 // -------------------------------------------------------------
-// Clipboard Paste Handler (Ctrl + V)
+// Clipboard Paste Handler (Ctrl + V) - Files, Images, URLs & Plain Text
 // -------------------------------------------------------------
 void HandleClipboardPaste(HWND hwnd)
 {
@@ -370,17 +533,29 @@ void HandleClipboardPaste(HWND hwnd)
                 std::wstring str(pText);
                 GlobalUnlock(hData);
 
-                if (str.rfind(L"http://", 0) == 0 || str.rfind(L"https://", 0) == 0 || str.rfind(L"data:", 0) == 0)
+                std::wstring localResolved = ResolveLocalFileUri(str);
+                if (!localResolved.empty())
+                {
+                    AddFileToTray(localResolved, false);
+                    handledSync = true;
+                }
+                else if ((str.rfind(L"http://", 0) == 0 || str.rfind(L"https://", 0) == 0 || str.rfind(L"data:", 0) == 0) &&
+                         str.find_first_of(L" \r\n\t") == std::wstring::npos)
                 {
                     CloseClipboard();
                     TriggerExpand(hwnd);
                     StartAsyncWebDownload(str, hwnd);
                     return;
                 }
-                else if (GetFileAttributesW(str.c_str()) != INVALID_FILE_ATTRIBUTES)
+                else
                 {
-                    AddFileToTray(str, false);
-                    handledSync = true;
+                    // Plain text paste -> Save to deduplicated .txt file
+                    std::wstring savedTxt = SaveTextToTemp(str);
+                    if (!savedTxt.empty())
+                    {
+                        AddFileToTray(savedTxt, false);
+                        handledSync = true;
+                    }
                 }
             }
             else
@@ -402,18 +577,93 @@ void HandleClipboardPaste(HWND hwnd)
 }
 
 // -------------------------------------------------------------
-// OLE IDropTarget for Instant Non-Blocking Drops
+// Helper: Extract Virtual File from IDataObject (Outlook, Electron, Browsers)
+// -------------------------------------------------------------
+bool TryExtractVirtualFiles(IDataObject* pDataObj, UINT cfFileDescW, UINT cfFileDescA, UINT cfFileContents)
+{
+    bool anyExtracted = false;
+    STGMEDIUM smDesc = {};
+    FORMATETC fmtDescW = { static_cast<CLIPFORMAT>(cfFileDescW), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+
+    if (pDataObj->GetData(&fmtDescW, &smDesc) == S_OK)
+    {
+        auto* fgd = static_cast<FILEGROUPDESCRIPTORW*>(GlobalLock(smDesc.hGlobal));
+        if (fgd)
+        {
+            std::wstring outDir = GetWinTrayTempDir();
+            for (UINT i = 0; i < fgd->cItems; ++i)
+            {
+                std::wstring fileName = fgd->fgd[i].cFileName;
+                size_t slash = fileName.find_last_of(L"/\\");
+                if (slash != std::wstring::npos) fileName = fileName.substr(slash + 1);
+                for (auto& ch : fileName) if (wcschr(L"<>:\"/\\|?*", ch)) ch = L'_';
+                if (fileName.empty()) fileName = L"DroppedFile_" + std::to_wstring(i);
+
+                FORMATETC fmtCont = { static_cast<CLIPFORMAT>(cfFileContents), nullptr, DVASPECT_CONTENT, static_cast<LONG>(i), TYMED_ISTREAM | TYMED_HGLOBAL };
+                STGMEDIUM smCont = {};
+                if (pDataObj->GetData(&fmtCont, &smCont) == S_OK)
+                {
+                    std::wstring outPath = outDir + L"\\" + std::to_wstring(GetTickCount64()) + L"_" + fileName;
+                    HANDLE hFile = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (hFile != INVALID_HANDLE_VALUE)
+                    {
+                        if (smCont.tymed == TYMED_ISTREAM && smCont.pstm)
+                        {
+                            BYTE buf[16384];
+                            ULONG read = 0;
+                            while (SUCCEEDED(smCont.pstm->Read(buf, sizeof(buf), &read)) && read > 0)
+                            {
+                                DWORD written = 0;
+                                WriteFile(hFile, buf, read, &written, nullptr);
+                            }
+                            anyExtracted = true;
+                        }
+                        else if (smCont.tymed == TYMED_HGLOBAL && smCont.hGlobal)
+                        {
+                            void* pData = GlobalLock(smCont.hGlobal);
+                            SIZE_T sz = GlobalSize(smCont.hGlobal);
+                            if (pData && sz > 0)
+                            {
+                                DWORD written = 0;
+                                WriteFile(hFile, pData, static_cast<DWORD>(sz), &written, nullptr);
+                                anyExtracted = true;
+                            }
+                            if (pData) GlobalUnlock(smCont.hGlobal);
+                        }
+                        CloseHandle(hFile);
+                        if (anyExtracted) AddFileToTray(outPath, false);
+                    }
+                    ReleaseStgMedium(&smCont);
+                }
+            }
+            GlobalUnlock(smDesc.hGlobal);
+        }
+        ReleaseStgMedium(&smDesc);
+    }
+    return anyExtracted;
+}
+
+// -------------------------------------------------------------
+// OLE IDropTarget (Supports Explorer, VS Code, Gmail, Browsers & Text)
 // -------------------------------------------------------------
 class TrayDropTarget : public IDropTarget
 {
     LONG m_cRef = 1;
     HWND m_hwnd;
     UINT m_cfHtml;
+    UINT m_cfDownloadUrl;
+    UINT m_cfFileDescW;
+    UINT m_cfFileDescA;
+    UINT m_cfFileContents;
 
 public:
     TrayDropTarget(HWND hwnd) : m_hwnd(hwnd)
     {
         m_cfHtml = RegisterClipboardFormatW(L"HTML Format");
+        m_cfDownloadUrl = RegisterClipboardFormatW(L"DownloadURL");
+        m_cfFileDescW = RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORW);
+        m_cfFileDescA = RegisterClipboardFormatW(CFSTR_FILEDESCRIPTORA);
+        m_cfFileContents = RegisterClipboardFormatW(CFSTR_FILECONTENTS);
     }
 
     STDMETHODIMP QueryInterface(REFIID riid, void **ppv) override
@@ -457,9 +707,10 @@ public:
         if (!pdwEffect || !pDataObj) return E_POINTER;
         *pdwEffect = DROPEFFECT_COPY;
 
-        // 1. Check for real local files (CF_HDROP)
-        FORMATETC fDrop = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         STGMEDIUM sm = {};
+
+        // 1. Real Local Files (CF_HDROP - Explorer, VS Code Explorer sidebar, etc.)
+        FORMATETC fDrop = { CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         if (pDataObj->GetData(&fDrop, &sm) == S_OK)
         {
             bool added = false;
@@ -489,7 +740,60 @@ public:
             }
         }
 
-        // 2. Check Browser "HTML Format" for true <img src="..."> media URL
+        // 2. Virtual File Descriptors (Outlook, Webmail/Electron attachments)
+        if (TryExtractVirtualFiles(pDataObj, m_cfFileDescW, m_cfFileDescA, m_cfFileContents))
+        {
+            CalculateTargetSize(g_isExpanded);
+            SetTimer(m_hwnd, ANIM_TIMER_ID, 12, nullptr);
+            InvalidateRect(m_hwnd, nullptr, TRUE);
+            return S_OK;
+        }
+
+        // 3. Chrome / Edge / Gmail Attachment "DownloadURL" (format: mime:filename:url)
+        FORMATETC fDlUrl = { static_cast<CLIPFORMAT>(m_cfDownloadUrl), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+        if (pDataObj->GetData(&fDlUrl, &sm) == S_OK)
+        {
+            std::wstring dlStr;
+            const void* pRaw = GlobalLock(sm.hGlobal);
+            SIZE_T rawSz = GlobalSize(sm.hGlobal);
+            if (pRaw && rawSz > 0)
+            {
+                // Detect if wide or ANSI string
+                if (rawSz >= 2 && reinterpret_cast<const BYTE*>(pRaw)[1] == 0)
+                {
+                    dlStr = reinterpret_cast<const wchar_t*>(pRaw);
+                }
+                else
+                {
+                    const char* pAnsi = reinterpret_cast<const char*>(pRaw);
+                    int wlen = MultiByteToWideChar(CP_UTF8, 0, pAnsi, -1, nullptr, 0);
+                    if (wlen > 1)
+                    {
+                        dlStr.resize(wlen - 1);
+                        MultiByteToWideChar(CP_UTF8, 0, pAnsi, -1, &dlStr[0], wlen);
+                    }
+                }
+                GlobalUnlock(sm.hGlobal);
+            }
+            ReleaseStgMedium(&sm);
+
+            // Parse "application/pdf:invoice.pdf:https://mail.google.com/..."
+            size_t firstColon = dlStr.find(L':');
+            if (firstColon != std::wstring::npos)
+            {
+                size_t httpPos = dlStr.find(L":http://", firstColon + 1);
+                if (httpPos == std::wstring::npos) httpPos = dlStr.find(L":https://", firstColon + 1);
+                if (httpPos != std::wstring::npos)
+                {
+                    std::wstring fileName = dlStr.substr(firstColon + 1, httpPos - (firstColon + 1));
+                    std::wstring url = dlStr.substr(httpPos + 1);
+                    StartAsyncWebDownload(url, m_hwnd, fileName);
+                    return S_OK;
+                }
+            }
+        }
+
+        // 4. Browser "HTML Format" for <img src="..."> media URL
         FORMATETC fHtml = { static_cast<CLIPFORMAT>(m_cfHtml), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         if (pDataObj->GetData(&fHtml, &sm) == S_OK)
         {
@@ -513,7 +817,7 @@ public:
             }
         }
 
-        // 3. Check for Raw Dropped Bitmap (CF_BITMAP)
+        // 5. Raw Dropped Bitmap (CF_BITMAP)
         FORMATETC fBmp = { CF_BITMAP, nullptr, DVASPECT_CONTENT, -1, TYMED_GDI };
         if (pDataObj->GetData(&fBmp, &sm) == S_OK)
         {
@@ -529,7 +833,7 @@ public:
             }
         }
 
-        // 4. Fallback to CF_UNICODETEXT (Direct image/video URLs, VS Code file:/// URIs)
+        // 6. CF_UNICODETEXT (VS Code Editor Tabs file:/// URIs, Web URLs, or Dropped Text Selection)
         FORMATETC fUnicode = { CF_UNICODETEXT, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
         if (pDataObj->GetData(&fUnicode, &sm) == S_OK)
         {
@@ -540,24 +844,44 @@ public:
                 GlobalUnlock(sm.hGlobal);
                 ReleaseStgMedium(&sm);
 
-                if (data.rfind(L"file:///", 0) == 0)
+                // Check if it's one or more file:/// URIs or local paths (e.g., from VS Code tabs)
+                std::wstringstream ss(data);
+                std::wstring line;
+                bool anyLocalAdded = false;
+                while (std::getline(ss, line))
                 {
-                    std::wstring localPath = UrlDecode(data.substr(8));
-                    size_t endLine = localPath.find_first_of(L"\r\n");
-                    if (endLine != std::wstring::npos) localPath = localPath.substr(0, endLine);
-                    for (auto& ch : localPath) if (ch == L'/') ch = L'\\';
-
-                    if (GetFileAttributesW(localPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+                    std::wstring resolved = ResolveLocalFileUri(line);
+                    if (!resolved.empty())
                     {
-                        AddFileToTray(localPath, false);
-                        CalculateTargetSize(g_isExpanded);
-                        SetTimer(m_hwnd, ANIM_TIMER_ID, 12, nullptr);
-                        InvalidateRect(m_hwnd, nullptr, TRUE);
+                        AddFileToTray(resolved, false);
+                        anyLocalAdded = true;
                     }
                 }
-                else if (data.rfind(L"http://", 0) == 0 || data.rfind(L"https://", 0) == 0 || data.rfind(L"data:", 0) == 0)
+
+                if (anyLocalAdded)
+                {
+                    CalculateTargetSize(g_isExpanded);
+                    SetTimer(m_hwnd, ANIM_TIMER_ID, 12, nullptr);
+                    InvalidateRect(m_hwnd, nullptr, TRUE);
+                    return S_OK;
+                }
+
+                // Single URL download
+                if ((data.rfind(L"http://", 0) == 0 || data.rfind(L"https://", 0) == 0 || data.rfind(L"data:", 0) == 0) &&
+                    data.find_first_of(L" \r\n\t") == std::wstring::npos)
                 {
                     StartAsyncWebDownload(data, m_hwnd);
+                    return S_OK;
+                }
+
+                // Plain dropped text -> Save to deduplicated .txt file
+                std::wstring savedTxt = SaveTextToTemp(data);
+                if (!savedTxt.empty())
+                {
+                    AddFileToTray(savedTxt, false);
+                    CalculateTargetSize(g_isExpanded);
+                    SetTimer(m_hwnd, ANIM_TIMER_ID, 12, nullptr);
+                    InvalidateRect(m_hwnd, nullptr, TRUE);
                 }
                 return S_OK;
             }
@@ -798,19 +1122,20 @@ void StartDraggingSelectedOut(HWND hwnd, int clickedIdx)
     g_isSelfDragging = true;
     RevokeTrayDropTarget(hwnd);
 
-    DWORD dropEffect = g_settings.moveFiles ? DROPEFFECT_MOVE : DROPEFFECT_COPY;
+    // Always allow COPY so web browsers don't reject the drag
+    DWORD dropEffect = DROPEFFECT_COPY | (g_settings.moveFiles ? DROPEFFECT_MOVE : 0);
     auto *dataObj = new MultiFileDataObject(pathsToDrag, dropEffect);
     auto *dropSrc = new SimpleDropSource();
 
     DWORD dwEffectResult = 0;
-    HRESULT hr = DoDragDrop(dataObj, dropSrc, dropEffect, &dwEffectResult);
+    HRESULT hr = DoDragDrop(dataObj, dropSrc, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK, &dwEffectResult);
 
     dataObj->Release();
     dropSrc->Release();
 
     if (hr == DRAGDROP_S_DROP && (dwEffectResult & (DROPEFFECT_COPY | DROPEFFECT_MOVE)))
     {
-        if (g_settings.autoRemoveUnpinned || g_settings.moveFiles)
+        if (g_settings.autoRemoveUnpinned || (dwEffectResult & DROPEFFECT_MOVE))
         {
             std::vector<std::wstring> toRemove;
             for (int idx : indicesToDrag)
@@ -825,6 +1150,12 @@ void StartDraggingSelectedOut(HWND hwnd, int clickedIdx)
                 if (it != g_items.end())
                 {
                     if (it->icon) DestroyIcon(it->icon);
+                    
+                    // CRITICAL FIX: Do NOT call DeleteTempFileIfOwned(it->path) here!
+                    // Browsers read dropped files asynchronously. If we delete the physical file 
+                    // instantly, the browser's upload fails. CleanupOldTempFiles(3) will handle 
+                    // deleting the physical file in the background safely on next launch.
+                    
                     g_items.erase(it);
                 }
             }
