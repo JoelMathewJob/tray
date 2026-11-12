@@ -1,4 +1,4 @@
-#include "settings.h"
+﻿#include "settings.h"
 #include "state.h"
 #include "updater.h"
 #include "blur.h"
