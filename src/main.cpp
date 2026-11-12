@@ -33,6 +33,9 @@ static int g_dragCandidateIndex = -1;
 static bool g_isMenuOpen = false;
 static bool g_mouseTrackingActive = false;
 static bool g_isDraggingWindow = false;
+static bool g_dragWindowCandidate = false;
+static POINT g_dragWindowStartCursor = {0, 0};
+static float g_dragWindowStartRatio = 0.5f;
 
 static RECT g_settingsBtnRect = {};
 static bool g_settingsHovered = false;
@@ -64,28 +67,28 @@ void UpdateThemeColors()
 {
     bool isDark = IsResolvedDarkMode();
     
-    // Borders: Subtle definition
-    g_theme.border       = isDark ? RGB(50, 50, 60)   : RGB(170, 175, 185);
+    // Borders: Crisp 1px outline
+    g_theme.border       = isDark ? RGB(75, 82, 102)  : RGB(145, 155, 175);
     
-    // TEXT: Rich Charcoal / Deep Navy for razor-sharp Light Mode readability
-g_theme.textPrimary  = isDark ? RGB(255, 255, 255): RGB(255, 255, 255); 
-    g_theme.textSec      = isDark ? RGB(160, 160, 175): RGB(65, 75, 90);
+    // TEXT: Crisp pure white in Dark Mode, Deep Charcoal Black in Light Mode (Maximum contrast)
+    g_theme.textPrimary  = isDark ? RGB(255, 255, 255): RGB(10, 14, 22); 
+    g_theme.textSec      = isDark ? RGB(175, 185, 205): RGB(50, 60, 75);
     
-    // Hover Pills: Soft, translucent slate (ensures the dark text pops)
-    g_theme.pillHover    = isDark ? RGB(35, 35, 42)   : RGB(35, 35, 42);
-    g_theme.pillBorder   = isDark ? RGB(70, 70, 85)   : RGB(35, 35, 42);
+    // Hover Pills
+    g_theme.pillHover    = isDark ? RGB(45, 50, 65)   : RGB(215, 222, 236);
+    g_theme.pillBorder   = isDark ? RGB(80, 88, 110)  : RGB(160, 172, 192);
     
-    // Selection: Crisp Windows Blue (White text drawn on top of this will be perfectly readable)
-    g_theme.selBg        = isDark ? RGB(15, 45, 85)   : RGB(0, 0, 0);
-    g_theme.selBorder    = isDark ? RGB(45, 140, 245) : RGB(0, 85, 180);
+    // Selection: Crisp Windows Blue
+    g_theme.selBg        = isDark ? RGB(20, 55, 105)  : RGB(200, 222, 255);
+    g_theme.selBorder    = isDark ? RGB(55, 150, 255) : RGB(30, 105, 230);
     
     // Tooltips & Dividers
-    g_theme.tipBg        = isDark ? RGB(32, 32, 38)   : RGB(0, 0, 0) ;
-    g_theme.div          = isDark ? RGB(55, 55, 65)   : RGB(180, 185, 195);
+    g_theme.tipBg        = isDark ? RGB(28, 30, 38)   : RGB(225, 230, 242);
+    g_theme.div          = isDark ? RGB(65, 72, 88)   : RGB(185, 195, 210);
     
     // Scrollbars
-    g_theme.scrollTrack  = isDark ? RGB(20, 20, 25)   : RGB(205, 210, 220);
-    g_theme.scrollThumb  = isDark ? RGB(90, 90, 105)  : RGB(140, 145, 155);
+    g_theme.scrollTrack  = isDark ? RGB(20, 22, 28)   : RGB(218, 224, 234);
+    g_theme.scrollThumb  = isDark ? RGB(85, 92, 110)  : RGB(140, 148, 164);
 }
 // Bulletproof path normalizer for VS Code & Web browsers
 static std::wstring NormalizeWinPath(const std::wstring &rawPath)
@@ -262,34 +265,28 @@ void UpdateTrayWindowGeometry(HWND hwnd)
     int h = static_cast<int>(std::lround(g_curH));
     int posX = 0, posY = 0;
 
+    int topOffset = (g_settings.notchStyle == NOTCH_FLOATING && g_settings.dockEdge == EDGE_TOP) ? 8 : 0;
+
     switch (g_settings.dockEdge)
     {
     case EDGE_TOP:
         posX = std::clamp(static_cast<int>(screenW * g_settings.dockOffsetRatio - w / 2), 0, screenW - w);
-        posY = 0;
+        posY = topOffset;
         break;
     case EDGE_LEFT:
-        posX = 0;
+        posX = (g_settings.notchStyle == NOTCH_FLOATING) ? 8 : 0;
         posY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, screenH - h);
         break;
     case EDGE_RIGHT:
-        posX = screenW - w;
+        posX = screenW - w - ((g_settings.notchStyle == NOTCH_FLOATING) ? 8 : 0);
         posY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, screenH - h);
         break;
     }
 
     SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, w, h, SWP_NOACTIVATE | SWP_NOREDRAW);
 
-    // Restore perfect manual clipping to eliminate the double-border misalignment!
-    HRGN hRgn = nullptr;
-    if (g_settings.dockEdge == EDGE_TOP)
-        hRgn = CreateRoundRectRgn(0, -14, w + 1, h + 1, CORNER_RADIUS, CORNER_RADIUS);
-    else if (g_settings.dockEdge == EDGE_LEFT)
-        hRgn = CreateRoundRectRgn(-14, 0, w + 1, h + 1, CORNER_RADIUS, CORNER_RADIUS);
-    else
-        hRgn = CreateRoundRectRgn(0, 0, w + 15, h + 1, CORNER_RADIUS, CORNER_RADIUS);
-
-    SetWindowRgn(hwnd, hRgn, TRUE);
+    // Cleared GDI region: restores Windows 11 DWM native hardware-accelerated corner rounding (DWMWCP_ROUND)
+    SetWindowRgn(hwnd, NULL, TRUE);
 }
 
 void PruneMissingItems(HWND hwnd)
@@ -442,8 +439,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
     case WM_NCCALCSIZE:
         if (wParam == TRUE)
-            return 0; // Fixes "Half Background" DWM bug
+            return 0; // Fixes "Half Background" DWM bug and removes non-client borders
         break;
+
+    case WM_NCHITTEST:
+        // Treat entire window as client area, preventing WS_THICKFRAME resizing handles
+        return HTCLIENT;
 
     case WM_CREATE:
     {
@@ -594,17 +595,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int x = static_cast<short>(LOWORD(lParam));
         int y = static_cast<short>(HIWORD(lParam));
 
-        if (g_isDraggingWindow && (wParam & MK_LBUTTON))
+        if (g_dragWindowCandidate && (wParam & MK_LBUTTON))
         {
-            POINT pt;
-            GetCursorPos(&pt);
-            int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
-            if (g_settings.dockEdge == EDGE_TOP)
-                g_settings.dockOffsetRatio = std::clamp(static_cast<float>(pt.x) / screenW, 0.1f, 0.9f);
-            else
-                g_settings.dockOffsetRatio = std::clamp(static_cast<float>(pt.y) / screenH, 0.1f, 0.9f);
-            UpdateTrayWindowGeometry(hwnd);
-            return 0;
+            POINT curPt;
+            GetCursorPos(&curPt);
+            int deltaX = curPt.x - g_dragWindowStartCursor.x;
+            int deltaY = curPt.y - g_dragWindowStartCursor.y;
+
+            // Require an intentional drag of at least 8 pixels before moving the window
+            if (!g_isDraggingWindow && (std::abs(deltaX) > 8 || std::abs(deltaY) > 8))
+            {
+                g_isDraggingWindow = true;
+            }
+
+            if (g_isDraggingWindow)
+            {
+                int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
+                if (g_settings.dockEdge == EDGE_TOP)
+                {
+                    float deltaRatio = static_cast<float>(deltaX) / screenW;
+                    g_settings.dockOffsetRatio = std::clamp(g_dragWindowStartRatio + deltaRatio, 0.1f, 0.9f);
+                }
+                else
+                {
+                    float deltaRatio = static_cast<float>(deltaY) / screenH;
+                    g_settings.dockOffsetRatio = std::clamp(g_dragWindowStartRatio + deltaRatio, 0.1f, 0.9f);
+                }
+                UpdateTrayWindowGeometry(hwnd);
+                return 0;
+            }
         }
 
         if (!g_mouseTrackingActive)
@@ -664,6 +683,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
         g_isDraggingWindow = false;
+        g_dragWindowCandidate = false;
 
         if (!g_isMenuOpen && g_isExpanded)
         {
@@ -736,7 +756,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (!clickedAnItem)
         {
-            g_isDraggingWindow = true;
+            g_dragWindowCandidate = true;
+            g_isDraggingWindow = false;
+            GetCursorPos(&g_dragWindowStartCursor);
+            g_dragWindowStartRatio = g_settings.dockOffsetRatio;
             SetCapture(hwnd);
             for (auto &item : g_items)
                 item.isSelected = false;
@@ -766,11 +789,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_LBUTTONUP:
-        if (g_isDraggingWindow)
+        if (g_dragWindowCandidate || g_isDraggingWindow)
         {
+            if (g_isDraggingWindow)
+            {
+                SaveSettings();
+            }
             g_isDraggingWindow = false;
+            g_dragWindowCandidate = false;
             ReleaseCapture();
-            SaveSettings();
         }
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
@@ -902,351 +929,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_ERASEBKGND:
         return 1;
 
-    // case WM_PAINT:
-    // {
-    //     PAINTSTRUCT ps;
-    //     HDC hdc = BeginPaint(hwnd, &ps);
-
-    //     RECT clientRc;
-    //     GetClientRect(hwnd, &clientRc);
-    //     int width = std::max(1, static_cast<int>(clientRc.right));
-    //     int height = std::max(1, static_cast<int>(clientRc.bottom));
-
-    //     HDC memDC = CreateCompatibleDC(hdc);
-    //     HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
-    //     HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
-
-    //     HBRUSH bgBrush = CreateSolidBrush(RGB(0, 0, 0));
-    //     FillRect(memDC, &clientRc, bgBrush);
-    //     DeleteObject(bgBrush);
-
-    //     HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
-    //     HBRUSH nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
-    //     SelectObject(memDC, borderPen);
-    //     SelectObject(memDC, nullBrush);
-
-    //     // Exact 1:1 border drawing matching the window region clip without offsets
-    //     if (g_settings.dockEdge == EDGE_TOP)
-    //         RoundRect(memDC, 0, -14, width, height, CORNER_RADIUS, CORNER_RADIUS);
-    //     else if (g_settings.dockEdge == EDGE_LEFT)
-    //         RoundRect(memDC, -14, 0, width, height, CORNER_RADIUS, CORNER_RADIUS);
-    //     else
-    //         RoundRect(memDC, 0, 0, width + 14, height, CORNER_RADIUS, CORNER_RADIUS);
-    //     DeleteObject(borderPen);
-
-    //     bool isVert = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
-
-    //     if ((g_curH < 30.0f && !isVert) || (g_curW < 30.0f && isVert) || !g_isExpanded)
-    //     {
-    //         for (auto &item : g_items)
-    //             item.rect = {0, 0, 0, 0};
-
-    //         HBRUSH pillBrush = CreateSolidBrush(g_theme.pillHover);
-    //         HPEN pillPen = CreatePen(PS_SOLID, 1, g_theme.pillBorder);
-    //         SelectObject(memDC, pillBrush);
-    //         SelectObject(memDC, pillPen);
-    //         if (!isVert)
-    //             RoundRect(memDC, (width - 36) / 2, 4, (width + 36) / 2, 8, 4, 4);
-    //         else
-    //             RoundRect(memDC, 4, (height - 36) / 2, 8, (height + 36) / 2, 4, 4);
-    //         DeleteObject(pillBrush);
-    //         DeleteObject(pillPen);
-    //     }
-    //     else
-    //     {
-    //         g_settingsBtnRect = isVert
-    //                                 ? RECT{(width - 32) / 2, height - 38, (width + 32) / 2, height - 10}
-    //                                 : RECT{width - 38, 12, width - 12, 38};
-
-    //         if (g_settingsHovered)
-    //         {
-    //             HBRUSH gearHover = CreateSolidBrush(g_theme.pillHover);
-    //             HPEN gearPen = CreatePen(PS_SOLID, 1, g_theme.pillBorder);
-    //             SelectObject(memDC, gearHover);
-    //             SelectObject(memDC, gearPen);
-    //             RoundRect(memDC, g_settingsBtnRect.left, g_settingsBtnRect.top, g_settingsBtnRect.right, g_settingsBtnRect.bottom, 8, 8);
-    //             DeleteObject(gearHover);
-    //             DeleteObject(gearPen);
-    //         }
-    //         HFONT gearFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-    //         HFONT oldGFont = (HFONT)SelectObject(memDC, gearFont);
-    //         SetBkMode(memDC, TRANSPARENT);
-    //         SetTextColor(memDC, g_settingsHovered ? g_theme.textPrimary : g_theme.textSec);
-    //         DrawTextW(memDC, L"\x2699", -1, &g_settingsBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    //         SelectObject(memDC, oldGFont);
-    //         DeleteObject(gearFont);
-
-    //         if (g_items.empty())
-    //         {
-    //             HFONT hFont = CreateFontW(14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    //             HFONT oldFont = (HFONT)SelectObject(memDC, hFont);
-    //             SetBkMode(memDC, TRANSPARENT);
-    //             SetTextColor(memDC, g_theme.textSec);
-
-    //             RECT textRc = {0, 0, width, height};
-    //             DrawTextW(memDC, isVert ? L"Drop here" : L"Drop files, web media, or paste (Ctrl+V) here", -1, &textRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    //             SelectObject(memDC, oldFont);
-    //             DeleteObject(hFont);
-    //         }
-    //         else
-    //         {
-    //             int baseItemW = g_settings.largeIcons ? 68 : 60;
-    //             int baseItemH = g_settings.largeIcons ? 76 : 68;
-    //             int baseIconSize = g_settings.largeIcons ? 40 : 32;
-    //             int itemSpacing = 8;
-    //             int startY = 14;
-
-    //             std::vector<int> pinnedIndices;
-    //             std::vector<int> unpinnedIndices;
-    //             for (int i = 0; i < static_cast<int>(g_items.size()); ++i)
-    //             {
-    //                 if (g_items[i].isPinned)
-    //                     pinnedIndices.push_back(i);
-    //                 else
-    //                     unpinnedIndices.push_back(i);
-    //             }
-
-    //             HFONT hFont = CreateFontW(g_settings.largeIcons ? -12 : -11, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    //             HFONT oldFont = (HFONT)SelectObject(memDC, hFont);
-    //             SetBkMode(memDC, TRANSPARENT);
-
-    //             int safeLimit = isVert ? (height - 46) : (width - 46);
-
-    //             auto renderItemCard = [&](int idx, int drawCoord, bool showPinBadge, int clipStart, int clipEnd)
-    //             {
-    //                 float scale = g_items[idx].currentScale;
-    //                 int itemW = static_cast<int>(baseItemW * scale);
-    //                 int itemH = static_cast<int>(baseItemH * scale);
-    //                 int shiftW = (itemW - baseItemW) / 2;
-    //                 int shiftH = (itemH - baseItemH) / 2;
-
-    //                 RECT pillRect;
-    //                 if (isVert)
-    //                 {
-    //                     int cardX = (width - baseItemW) / 2;
-    //                     pillRect = {cardX - shiftW, drawCoord - shiftH, cardX + baseItemW + shiftW, drawCoord + baseItemH + shiftH};
-    //                 }
-    //                 else
-    //                 {
-    //                     pillRect = {drawCoord - shiftW, startY - shiftH, drawCoord + baseItemW + shiftW, startY + baseItemH + shiftH};
-    //                 }
-
-    //                 RECT hitRect = pillRect;
-    //                 if (isVert)
-    //                 {
-    //                     hitRect.top = std::max<LONG>(hitRect.top, clipStart);
-    //                     hitRect.bottom = std::min<LONG>(hitRect.bottom, clipEnd);
-    //                     if (hitRect.bottom <= hitRect.top)
-    //                         hitRect = {0, 0, 0, 0};
-    //                 }
-    //                 else
-    //                 {
-    //                     hitRect.left = std::max<LONG>(hitRect.left, clipStart);
-    //                     hitRect.right = std::min<LONG>(hitRect.right, clipEnd);
-    //                     if (hitRect.right <= hitRect.left)
-    //                         hitRect = {0, 0, 0, 0};
-    //                 }
-    //                 g_items[idx].rect = hitRect;
-
-    //                 if (g_items[idx].isSelected)
-    //                 {
-    //                     HBRUSH selBrush = CreateSolidBrush(g_theme.selBg);
-    //                     HPEN borderSel = CreatePen(PS_SOLID, 1, g_theme.selBorder);
-    //                     SelectObject(memDC, selBrush);
-    //                     SelectObject(memDC, borderSel);
-    //                     RoundRect(memDC, pillRect.left, pillRect.top, pillRect.right, pillRect.bottom, 12, 12);
-    //                     DeleteObject(selBrush);
-    //                     DeleteObject(borderSel);
-    //                 }
-    //                 else if (idx == g_hoveredIndex)
-    //                 {
-    //                     HBRUSH hoverBrush = CreateSolidBrush(g_theme.pillHover);
-    //                     HPEN borderPill = CreatePen(PS_SOLID, 1, g_theme.pillBorder);
-    //                     SelectObject(memDC, hoverBrush);
-    //                     SelectObject(memDC, borderPill);
-    //                     RoundRect(memDC, pillRect.left, pillRect.top, pillRect.right, pillRect.bottom, 12, 12);
-    //                     DeleteObject(hoverBrush);
-    //                     DeleteObject(borderPill);
-    //                 }
-
-    //                 int iconSize = static_cast<int>(baseIconSize * scale);
-    //                 int iconX = pillRect.left + (itemW - iconSize) / 2;
-    //                 int iconY = pillRect.top + 6;
-
-    //                 if (g_items[idx].isLoading)
-    //                     DrawLoadingSpinner(memDC, iconX + iconSize / 2, iconY + iconSize / 2, iconSize / 2 - 2, g_SpinnerAngle);
-    //                 else if (g_items[idx].icon)
-    //                 {
-    //                     DrawIconEx(memDC, iconX, iconY, g_items[idx].icon, iconSize, iconSize, 0, nullptr, DI_NORMAL);
-    //                     if (showPinBadge)
-    //                     {
-    //                         HBRUSH pinBadge = CreateSolidBrush(RGB(245, 158, 11));
-    //                         HPEN pinRing = CreatePen(PS_SOLID, 1, RGB(180, 100, 10));
-    //                         SelectObject(memDC, pinBadge);
-    //                         SelectObject(memDC, pinRing);
-    //                         RoundRect(memDC, iconX + iconSize - 8, iconY, iconX + iconSize + 2, iconY + 10, 3, 3);
-    //                         DeleteObject(pinBadge);
-    //                         DeleteObject(pinRing);
-    //                     }
-    //                 }
-
-    //                 RECT textRc = {pillRect.left + 2, pillRect.bottom - 20, pillRect.right - 2, pillRect.bottom - 3};
-    //                 SetTextColor(memDC, g_items[idx].isSelected ? g_theme.textPrimary : g_theme.textSec);
-    //                 DrawTextW(memDC, g_items[idx].name.c_str(), -1, &textRc, DT_SINGLELINE | DT_CENTER | DT_END_ELLIPSIS);
-
-    //                 return isVert ? baseItemH : baseItemW;
-    //             };
-
-    //             int currentPos = 16;
-    //             int stepSize = (isVert ? baseItemH : baseItemW) + itemSpacing;
-
-    //             if (!pinnedIndices.empty())
-    //             {
-    //                 HRGN pinClip = isVert ? CreateRectRgn(0, 8, width, safeLimit) : CreateRectRgn(8, 0, safeLimit, height);
-    //                 SelectClipRgn(memDC, pinClip);
-
-    //                 for (int idx : pinnedIndices)
-    //                 {
-    //                     int sz = renderItemCard(idx, currentPos, true, 8, safeLimit);
-    //                     currentPos += sz + itemSpacing;
-    //                 }
-
-    //                 SelectClipRgn(memDC, nullptr);
-    //                 DeleteObject(pinClip);
-
-    //                 if (!unpinnedIndices.empty() && currentPos < safeLimit - 20)
-    //                 {
-    //                     HPEN divPen = CreatePen(PS_SOLID, 1, g_theme.div);
-    //                     HPEN oldPen = (HPEN)SelectObject(memDC, divPen);
-    //                     if (!isVert)
-    //                     {
-    //                         MoveToEx(memDC, currentPos + 4, startY + 8, nullptr);
-    //                         LineTo(memDC, currentPos + 4, startY + baseItemH - 8);
-    //                     }
-    //                     else
-    //                     {
-    //                         int cardX = (width - baseItemW) / 2;
-    //                         MoveToEx(memDC, cardX + 8, currentPos + 4, nullptr);
-    //                         LineTo(memDC, cardX + baseItemW - 8, currentPos + 4);
-    //                     }
-    //                     SelectObject(memDC, oldPen);
-    //                     DeleteObject(divPen);
-    //                     currentPos += 14;
-    //                 }
-    //             }
-
-    //             if (!unpinnedIndices.empty())
-    //             {
-    //                 int unpinnedStart = currentPos;
-    //                 int availableSpace = std::max(40, safeLimit - unpinnedStart);
-    //                 int totalUnpinnedLen = static_cast<int>(unpinnedIndices.size()) * stepSize;
-    //                 g_maxScroll = static_cast<float>(std::max(0, totalUnpinnedLen - availableSpace));
-    //                 g_scrollOffset = std::min(g_scrollOffset, g_maxScroll);
-
-    //                 HRGN clipRgn = isVert ? CreateRectRgn(0, unpinnedStart - 6, width, safeLimit) : CreateRectRgn(unpinnedStart - 6, 0, safeLimit, height);
-    //                 SelectClipRgn(memDC, clipRgn);
-
-    //                 int scrollCoord = unpinnedStart - static_cast<int>(std::lround(g_scrollOffset));
-    //                 for (int idx : unpinnedIndices)
-    //                 {
-    //                     int sz = renderItemCard(idx, scrollCoord, false, unpinnedStart, safeLimit);
-    //                     scrollCoord += sz + itemSpacing;
-    //                 }
-
-    //                 SelectClipRgn(memDC, nullptr);
-    //                 DeleteObject(clipRgn);
-
-    //                 if (g_maxScroll > 0.0f)
-    //                 {
-    //                     int trackLen = availableSpace;
-    //                     int thumbLen = std::max(24, trackLen * availableSpace / std::max(1, totalUnpinnedLen));
-    //                     int thumbOffset = static_cast<int>(std::lround((trackLen - thumbLen) * (g_scrollOffset / g_maxScroll)));
-
-    //                     HBRUSH trackBrush = CreateSolidBrush(g_theme.scrollTrack);
-    //                     HBRUSH thumbBrush = CreateSolidBrush(g_theme.scrollThumb);
-    //                     HPEN noPen = CreatePen(PS_NULL, 0, 0);
-    //                     SelectObject(memDC, noPen);
-
-    //                     if (!isVert)
-    //                     {
-    //                         SelectObject(memDC, trackBrush);
-    //                         RoundRect(memDC, unpinnedStart, startY + baseItemH + 8, unpinnedStart + trackLen, startY + baseItemH + 12, 2, 2);
-    //                         SelectObject(memDC, thumbBrush);
-    //                         RoundRect(memDC, unpinnedStart + thumbOffset, startY + baseItemH + 8, unpinnedStart + thumbOffset + thumbLen, startY + baseItemH + 12, 2, 2);
-    //                     }
-    //                     else
-    //                     {
-    //                         SelectObject(memDC, trackBrush);
-    //                         RoundRect(memDC, width - 8, unpinnedStart, width - 4, unpinnedStart + trackLen, 2, 2);
-    //                         SelectObject(memDC, thumbBrush);
-    //                         RoundRect(memDC, width - 8, unpinnedStart + thumbOffset, width - 4, unpinnedStart + thumbOffset + thumbLen, 2, 2);
-    //                     }
-    //                     DeleteObject(trackBrush);
-    //                     DeleteObject(thumbBrush);
-    //                     DeleteObject(noPen);
-    //                 }
-    //             }
-    //             else
-    //             {
-    //                 g_maxScroll = 0.0f;
-    //             }
-
-    //             if (g_hoveredIndex >= 0 && g_hoveredIndex < static_cast<int>(g_items.size()))
-    //             {
-    //                 const auto &item = g_items[g_hoveredIndex];
-    //                 if (item.rect.right > item.rect.left && item.rect.bottom > item.rect.top)
-    //                 {
-    //                     HFONT tipFont = CreateFontW(-12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    //                     HFONT oldTipFont = (HFONT)SelectObject(memDC, tipFont);
-
-    //                     RECT calcRc = {0, 0, 0, 0};
-    //                     DrawTextW(memDC, item.name.c_str(), -1, &calcRc, DT_CALCRECT | DT_SINGLELINE);
-    //                     int tipWidth = std::min(width - 12, static_cast<int>(calcRc.right - calcRc.left) + 20);
-    //                     int tipHeight = 22;
-
-    //                     int tipX, tipY;
-    //                     if (!isVert)
-    //                     {
-    //                         tipX = item.rect.left + ((item.rect.right - item.rect.left) - tipWidth) / 2;
-    //                         tipX = std::max(8, std::min(tipX, width - tipWidth - 8));
-    //                         tipY = height - 26; // perfectly clears the bottom boundary
-    //                     }
-    //                     else
-    //                     {
-    //                         tipX = (width - tipWidth) / 2;
-    //                         tipY = std::min(safeLimit - tipHeight - 2, static_cast<int>(item.rect.bottom) + 2);
-    //                     }
-
-    //                     HBRUSH tipBg = CreateSolidBrush(g_theme.tipBg);
-    //                     HPEN tipBorder = CreatePen(PS_SOLID, 1, g_theme.border);
-    //                     SelectObject(memDC, tipBg);
-    //                     SelectObject(memDC, tipBorder);
-    //                     RoundRect(memDC, tipX, tipY, tipX + tipWidth, tipY + tipHeight, 10, 10);
-    //                     DeleteObject(tipBg);
-    //                     DeleteObject(tipBorder);
-
-    //                     RECT labelRc = {tipX + 4, tipY, tipX + tipWidth - 4, tipY + tipHeight};
-    //                     SetTextColor(memDC, RGB(255, 255, 255));
-    //                     DrawTextW(memDC, item.name.c_str(), -1, &labelRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
-    //                     SelectObject(memDC, oldTipFont);
-    //                     DeleteObject(tipFont);
-    //                 }
-    //             }
-
-    //             SelectObject(memDC, oldFont);
-    //             DeleteObject(hFont);
-    //         }
-    //     }
-
-    //     BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
-    //     SelectObject(memDC, oldBitmap);
-    //     DeleteObject(memBitmap);
-    //     DeleteDC(memDC);
-    //     EndPaint(hwnd, &ps);
-    //     return 0;
-    // }
-
-
     case WM_PAINT:
     {
         PAINTSTRUCT ps;
@@ -1261,83 +943,41 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
         HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
 
-        // Use RGB(1,1,1) instead of pure black — DWM Acrylic treats RGB(0,0,0) as
-        // fully transparent, which causes the collapsed notch to appear half-invisible.
-        // RGB(1,1,1) is visually indistinguishable from black but remains opaque to DWM.
         bool isTinted = (g_settings.backdropStyle == 1);
-        bool isDark = IsResolvedDarkMode();
+        bool isDark   = IsResolvedDarkMode();
+        bool isVert   = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
+        bool isCollapsed = (g_curH < 35.0f && !isVert) || (g_curW < 35.0f && isVert) || !g_isExpanded;
 
-        if (isTinted)
-        {
-            // Tinted mode: paint a solid translucent-looking background
-            COLORREF tintBg = isDark ? RGB(26, 26, 46) : RGB(230, 232, 238);
-            HBRUSH bgBrush = CreateSolidBrush(tintBg);
-            FillRect(memDC, &clientRc, bgBrush);
-            DeleteObject(bgBrush);
-        }
-        else
-        {
-            // Glass mode: paint near-black so DWM acrylic shows through
-            HBRUSH bgBrush = CreateSolidBrush(RGB(1, 1, 1));
-            FillRect(memDC, &clientRc, bgBrush);
-            DeleteObject(bgBrush);
-        }
+        // 1. Pure black RGB(0,0,0) fill allows DWM Acrylic blur to shine through natively across the hardware-rounded window
+        HBRUSH bgBrush = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(memDC, &clientRc, bgBrush);
+        DeleteObject(bgBrush);
 
-        HPEN borderPen = CreatePen(PS_SOLID, 1, g_theme.border);
-        HBRUSH nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
-        SelectObject(memDC, borderPen);
-        SelectObject(memDC, nullBrush);
+        // 2. Apple-style 1px specular top rim highlight for realistic glass reflection (no inner border conflicting with DWM)
+        HPEN rimPen = CreatePen(PS_SOLID, 1, isDark ? RGB(75, 82, 105) : RGB(255, 255, 255));
+        HPEN oldPen = (HPEN)SelectObject(memDC, rimPen);
+        MoveToEx(memDC, 16, 1, nullptr);
+        LineTo(memDC, width - 16, 1);
+        SelectObject(memDC, oldPen);
+        DeleteObject(rimPen);
 
-        if (g_settings.dockEdge == EDGE_TOP)
-            RoundRect(memDC, 0, -14, width, height, CORNER_RADIUS, CORNER_RADIUS);
-        else if (g_settings.dockEdge == EDGE_LEFT)
-            RoundRect(memDC, -14, 0, width, height, CORNER_RADIUS, CORNER_RADIUS);
-        else
-            RoundRect(memDC, 0, 0, width + 14, height, CORNER_RADIUS, CORNER_RADIUS);
-        DeleteObject(borderPen);
-
-        bool isVert = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
-
-        if ((g_curH < 30.0f && !isVert) || (g_curW < 30.0f && isVert) || !g_isExpanded)
+        if (isCollapsed)
         {
             for (auto &item : g_items) item.rect = {0, 0, 0, 0};
 
-            // In collapsed state, fill the entire notch area with a visible solid color
-            // so DWM glass doesn't make the collapsed bar half-transparent.
-            COLORREF notchFill = isDark ? RGB(42, 42, 52) : RGB(52, 52, 62);
-            if (isTinted)
-                notchFill = isDark ? RGB(32, 32, 48) : RGB(200, 202, 210);
-            HBRUSH notchBg = CreateSolidBrush(notchFill);
-            if (!isVert)
-            {
-                RECT notchRc = {0, 0, width, height};
-                FillRect(memDC, &notchRc, notchBg);
-            }
-            else
-            {
-                RECT notchRc = {0, 0, width, height};
-                FillRect(memDC, &notchRc, notchBg);
-            }
-            DeleteObject(notchBg);
+            // Centered grab-pill indicator
+            int pillW = 38;
+            int pillH = 4;
+            int pillX = isVert ? (width - pillH) / 2 : (width - pillW) / 2;
+            int pillY = isVert ? (height - pillW) / 2 : (height - pillH) / 2;
 
-            // Redraw border on top of the filled notch
-            HPEN notchBorderPen = CreatePen(PS_SOLID, 1, g_theme.border);
-            SelectObject(memDC, notchBorderPen);
-            SelectObject(memDC, (HBRUSH)GetStockObject(NULL_BRUSH));
-            if (g_settings.dockEdge == EDGE_TOP)
-                RoundRect(memDC, 0, -14, width, height, CORNER_RADIUS, CORNER_RADIUS);
-            else if (g_settings.dockEdge == EDGE_LEFT)
-                RoundRect(memDC, -14, 0, width, height, CORNER_RADIUS, CORNER_RADIUS);
-            else
-                RoundRect(memDC, 0, 0, width + 14, height, CORNER_RADIUS, CORNER_RADIUS);
-            DeleteObject(notchBorderPen);
-
-            HBRUSH pillBrush = CreateSolidBrush(g_theme.pillHover);
-            HPEN pillPen = CreatePen(PS_SOLID, 1, g_theme.pillBorder);
+            COLORREF pillColor = isDark ? RGB(90, 95, 115) : RGB(140, 145, 160);
+            COLORREF pillBorder = isDark ? RGB(65, 70, 85) : RGB(170, 175, 190);
+            HBRUSH pillBrush = CreateSolidBrush(pillColor);
+            HPEN pillPen = CreatePen(PS_SOLID, 1, pillBorder);
             SelectObject(memDC, pillBrush);
             SelectObject(memDC, pillPen);
-            if (!isVert) RoundRect(memDC, (width - 36) / 2, 4, (width + 36) / 2, 8, 4, 4);
-            else RoundRect(memDC, 4, (height - 36) / 2, 8, (height + 36) / 2, 4, 4);
+            RoundRect(memDC, pillX, pillY, pillX + (isVert ? pillH : pillW), pillY + (isVert ? pillW : pillH), 4, 4);
             DeleteObject(pillBrush);
             DeleteObject(pillPen);
         }
@@ -1663,11 +1303,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Re-apply the DWM backdrop after resuming from sleep/power-saving mode.
         // DWM resets its composition state on resume, so the acrylic/tinted effect
         // is lost unless we re-apply it.
-        if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)
-        {
-            // Small delay to let DWM fully reinitialize before re-applying
-            SetTimer(hwnd, 9999, 1500, nullptr);
-        }
+        ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
+        UpdateTrayWindowGeometry(hwnd);
+        InvalidateRect(hwnd, nullptr, TRUE);
+        SetTimer(hwnd, 9999, 600, nullptr);
         return TRUE;
     }
 
@@ -1691,15 +1330,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_SETTINGCHANGE:
     {
-        if (lParam && _wcsicmp(reinterpret_cast<LPCWSTR>(lParam), L"ImmersiveColorSet") == 0)
-        {
-            if (g_settings.themeMode == 0)
-            { // If set to System
-                UpdateThemeColors();
-                ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
-                InvalidateRect(hwnd, nullptr, TRUE);
-            }
-        }
+        UpdateThemeColors();
+        ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
+        UpdateTrayWindowGeometry(hwnd);
+        InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
 
@@ -1708,6 +1342,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // DWM composition was toggled (e.g. after power saving mode disables it).
         // Re-apply backdrop immediately.
         ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
+        UpdateTrayWindowGeometry(hwnd);
         InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
     }
@@ -1728,8 +1363,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     
-    // CRITICAL FIX: Set default background to Black so DWM makes it glass instantly on launch
-    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.hbrBackground = nullptr;
 
     RegisterClass(&wc);
     InitSettingsPath();
@@ -1738,8 +1372,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     HWND hwnd = CreateWindowEx(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         CLASS_NAME, L"WinTray",
-        WS_POPUP | WS_VISIBLE,
-        100, 100, static_cast<int>(COLLAPSED_LENGTH), static_cast<int>(COLLAPSED_THICKNESS),
+        WS_POPUP,
+        0, 0, static_cast<int>(COLLAPSED_LENGTH), static_cast<int>(COLLAPSED_THICKNESS),
         nullptr, nullptr, hInstance, nullptr);
 
     if (!hwnd)
@@ -1747,6 +1381,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 
     ApplyGlobalHotkey(hwnd);
     UpdateTrayWindowGeometry(hwnd);
+    ShowWindow(hwnd, SW_SHOW);
 
     MSG msg = {};
     while (GetMessage(&msg, nullptr, 0, 0))

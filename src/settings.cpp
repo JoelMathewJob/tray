@@ -24,6 +24,7 @@ constexpr int ID_CB_EDGE = 2013;
 constexpr int IDC_CB_THEME = 2014; 
 constexpr int ID_LBL_AUTHOR = 2015;
 constexpr int IDC_CB_BACKDROP = 2016;
+constexpr int IDC_CB_NOTCH_STYLE = 2017;
 
 void InitSettingsPath()
 {
@@ -49,6 +50,7 @@ void LoadSettings()
     g_settings.hotkeyVk = GetPrivateProfileIntW(L"Hotkeys", L"Vk", 'T', g_iniPath.c_str());
     g_settings.dockEdge = GetPrivateProfileIntW(L"Window", L"DockEdge", EDGE_TOP, g_iniPath.c_str());
     g_settings.backdropStyle = GetPrivateProfileIntW(L"UI", L"BackdropStyle", 0, g_iniPath.c_str());
+    g_settings.notchStyle = GetPrivateProfileIntW(L"UI", L"NotchStyle", NOTCH_ATTACHED, g_iniPath.c_str());
 }
 
 void SaveSettings()
@@ -57,6 +59,7 @@ void SaveSettings()
         return;
     WritePrivateProfileStringW(L"UI", L"ThemeMode", std::to_wstring(g_settings.themeMode).c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"BackdropStyle", std::to_wstring(g_settings.backdropStyle).c_str(), g_iniPath.c_str());
+    WritePrivateProfileStringW(L"UI", L"NotchStyle", std::to_wstring(g_settings.notchStyle).c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"Preferences", L"MoveFiles", g_settings.moveFiles ? L"1" : L"0", g_iniPath.c_str());
     WritePrivateProfileStringW(L"Preferences", L"AutoRemoveUnpinned", g_settings.autoRemoveUnpinned ? L"1" : L"0", g_iniPath.c_str());
     WritePrivateProfileStringW(L"Accessibility", L"EnableMagnify", g_settings.enableMagnify ? L"1" : L"0", g_iniPath.c_str());
@@ -112,16 +115,22 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     {
         HFONT hFont = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
-        // Dock Edge, Theme & Backdrop Style
-        HWND hGroup0 = CreateWindowW(L"BUTTON", L" Dock Edge & Appearance ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 14, 340, 120, hwnd, nullptr, nullptr, nullptr);
+        // Dock Edge, Notch Style, Theme & Backdrop Style
+        HWND hGroup0 = CreateWindowW(L"BUTTON", L" Dock Edge & Appearance ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 14, 340, 105, hwnd, nullptr, nullptr, nullptr);
         SendMessageW(hGroup0, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        HWND hCbEdge = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 32, 35, 310, 120, hwnd, (HMENU)(UINT_PTR)ID_CB_EDGE, nullptr, nullptr);
+        HWND hCbEdge = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 32, 35, 150, 120, hwnd, (HMENU)(UINT_PTR)ID_CB_EDGE, nullptr, nullptr);
         SendMessageW(hCbEdge, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hCbEdge, CB_ADDSTRING, 0, (LPARAM)L"Top Edge");
         SendMessageW(hCbEdge, CB_ADDSTRING, 0, (LPARAM)L"Right Edge");
         SendMessageW(hCbEdge, CB_ADDSTRING, 0, (LPARAM)L"Left Edge");
         SendMessageW(hCbEdge, CB_SETCURSEL, g_settings.dockEdge, 0);
+
+        HWND hNotchStyleCb = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 192, 35, 150, 120, hwnd, (HMENU)(UINT_PTR)IDC_CB_NOTCH_STYLE, nullptr, nullptr);
+        SendMessageW(hNotchStyleCb, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(hNotchStyleCb, CB_ADDSTRING, 0, (LPARAM)L"Attached Notch");
+        SendMessageW(hNotchStyleCb, CB_ADDSTRING, 0, (LPARAM)L"Floating Island");
+        SendMessageW(hNotchStyleCb, CB_SETCURSEL, g_settings.notchStyle, 0);
 
         HWND hThemeCb = CreateWindowW(L"COMBOBOX", L"Choose Theme", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 32, 65, 150, 120, hwnd, (HMENU)(UINT_PTR)IDC_CB_THEME, nullptr, nullptr);
         SendMessageW(hThemeCb, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -132,38 +141,38 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         HWND hBackdropCb = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 192, 65, 150, 120, hwnd, (HMENU)(UINT_PTR)IDC_CB_BACKDROP, nullptr, nullptr);
         SendMessageW(hBackdropCb, WM_SETFONT, (WPARAM)hFont, TRUE);
-        SendMessageW(hBackdropCb, CB_ADDSTRING, 0, (LPARAM)L"Glass");
-        SendMessageW(hBackdropCb, CB_ADDSTRING, 0, (LPARAM)L"Tinted");
+        SendMessageW(hBackdropCb, CB_ADDSTRING, 0, (LPARAM)L"Liquid Glass");
+        SendMessageW(hBackdropCb, CB_ADDSTRING, 0, (LPARAM)L"Tinted (Candy)");
         SendMessageW(hBackdropCb, CB_SETCURSEL, g_settings.backdropStyle, 0);
 
-        // SHIFTED ALL OTHER GROUPS DOWN PROPORTIONALLY (+30 from before)
-        HWND hGroup1 = CreateWindowW(L"BUTTON", L" File Dragging & Dropping ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 145, 340, 60, hwnd, nullptr, nullptr, nullptr);
+        // SHIFTED ALL OTHER GROUPS DOWN PROPORTIONALLY
+        HWND hGroup1 = CreateWindowW(L"BUTTON", L" File Dragging & Dropping ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 130, 340, 60, hwnd, nullptr, nullptr, nullptr);
         SendMessageW(hGroup1, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        HWND hChkMove = CreateWindowW(L"BUTTON", L"Move files instead of Copying when dragging out", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 170, 310, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOVE, nullptr, nullptr);
+        HWND hChkMove = CreateWindowW(L"BUTTON", L"Move files instead of Copying when dragging out", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 155, 310, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOVE, nullptr, nullptr);
         SendMessageW(hChkMove, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkMove, BM_SETCHECK, g_settings.moveFiles ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hGroup2 = CreateWindowW(L"BUTTON", L" Global Toggle Shortcut ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 215, 340, 75, hwnd, nullptr, nullptr, nullptr);
+        HWND hGroup2 = CreateWindowW(L"BUTTON", L" Global Toggle Shortcut ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 200, 340, 75, hwnd, nullptr, nullptr, nullptr);
         SendMessageW(hGroup2, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        HWND hChkCtrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 240, 55, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_CTRL, nullptr, nullptr);
+        HWND hChkCtrl = CreateWindowW(L"BUTTON", L"Ctrl", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 225, 55, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_CTRL, nullptr, nullptr);
         SendMessageW(hChkCtrl, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkCtrl, BM_SETCHECK, (g_settings.hotkeyMods & MOD_CONTROL) ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hChkAlt = CreateWindowW(L"BUTTON", L"Alt", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 95, 240, 55, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_ALT, nullptr, nullptr);
+        HWND hChkAlt = CreateWindowW(L"BUTTON", L"Alt", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 95, 225, 55, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_ALT, nullptr, nullptr);
         SendMessageW(hChkAlt, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkAlt, BM_SETCHECK, (g_settings.hotkeyMods & MOD_ALT) ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hChkShift = CreateWindowW(L"BUTTON", L"Shift", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 158, 240, 60, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_SHIFT, nullptr, nullptr);
+        HWND hChkShift = CreateWindowW(L"BUTTON", L"Shift", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 158, 225, 60, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_SHIFT, nullptr, nullptr);
         SendMessageW(hChkShift, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkShift, BM_SETCHECK, (g_settings.hotkeyMods & MOD_SHIFT) ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hChkWin = CreateWindowW(L"BUTTON", L"Win", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 226, 240, 50, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_WIN, nullptr, nullptr);
+        HWND hChkWin = CreateWindowW(L"BUTTON", L"Win", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 226, 225, 50, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_MOD_WIN, nullptr, nullptr);
         SendMessageW(hChkWin, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkWin, BM_SETCHECK, (g_settings.hotkeyMods & MOD_WIN) ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hCbKey = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 285, 238, 60, 120, hwnd, (HMENU)(UINT_PTR)ID_CB_HOTKEY_KEY, nullptr, nullptr);
+        HWND hCbKey = CreateWindowW(L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | CBS_HASSTRINGS, 285, 223, 60, 120, hwnd, (HMENU)(UINT_PTR)ID_CB_HOTKEY_KEY, nullptr, nullptr);
         SendMessageW(hCbKey, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hCbKey, CB_ADDSTRING, 0, (LPARAM)L"A");
         SendMessageW(hCbKey, CB_ADDSTRING, 0, (LPARAM)L"T");
@@ -175,20 +184,20 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         else
             SendMessageW(hCbKey, CB_SELECTSTRING, -1, (LPARAM)(g_settings.hotkeyVk == 'A' ? L"A" : (g_settings.hotkeyVk == 'T' ? L"T" : (g_settings.hotkeyVk == 'Q' ? L"Q" : L"E"))));
 
-        HWND hGroup3 = CreateWindowW(L"BUTTON", L" Startup & Updates ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 300, 340, 85, hwnd, nullptr, nullptr, nullptr);
+        HWND hGroup3 = CreateWindowW(L"BUTTON", L" Startup & Updates ", WS_CHILD | WS_VISIBLE | BS_GROUPBOX, 18, 285, 340, 85, hwnd, nullptr, nullptr, nullptr);
         SendMessageW(hGroup3, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        HWND hChkStartup = CreateWindowW(L"BUTTON", L"Launch WinTray on Windows Startup", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 325, 310, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_STARTUP, nullptr, nullptr);
+        HWND hChkStartup = CreateWindowW(L"BUTTON", L"Launch WinTray on Windows Startup", WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 32, 310, 310, 22, hwnd, (HMENU)(UINT_PTR)ID_CHK_STARTUP, nullptr, nullptr);
         SendMessageW(hChkStartup, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(hChkStartup, BM_SETCHECK, IsAutoStartEnabled() ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        HWND hBtnUpdate = CreateWindowW(L"BUTTON", L"Check for Updates...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 32, 355, 160, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_UPDATE, nullptr, nullptr);
+        HWND hBtnUpdate = CreateWindowW(L"BUTTON", L"Check for Updates...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 32, 340, 160, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_UPDATE, nullptr, nullptr);
         SendMessageW(hBtnUpdate, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        HWND hBtnClose = CreateWindowW(L"BUTTON", L"Save & Close", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 202, 355, 140, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_CLOSE, nullptr, nullptr);
+        HWND hBtnClose = CreateWindowW(L"BUTTON", L"Save & Close", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 202, 340, 140, 30, hwnd, (HMENU)(UINT_PTR)ID_BTN_CLOSE, nullptr, nullptr);
         SendMessageW(hBtnClose, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        HWND hLblAuthor = CreateWindowW(L"STATIC", L"WinTray v1.1.3 - By Joel Mathew Job", WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER, 18, 405, 340, 20, hwnd, (HMENU)(UINT_PTR)ID_LBL_AUTHOR, nullptr, nullptr);
+        HWND hLblAuthor = CreateWindowW(L"STATIC", L"WinTray v1.1.3 - By Joel Mathew Job", WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER, 18, 390, 340, 20, hwnd, (HMENU)(UINT_PTR)ID_LBL_AUTHOR, nullptr, nullptr);
         SendMessageW(hLblAuthor, WM_SETFONT, (WPARAM)hFont, TRUE);
         
         return 0;
@@ -243,6 +252,9 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
             HWND hBackdropCb = GetDlgItem(hwnd, IDC_CB_BACKDROP);
             g_settings.backdropStyle = static_cast<int>(SendMessageW(hBackdropCb, CB_GETCURSEL, 0, 0));
+
+            HWND hNotchCb = GetDlgItem(hwnd, IDC_CB_NOTCH_STYLE);
+            g_settings.notchStyle = static_cast<int>(SendMessageW(hNotchCb, CB_GETCURSEL, 0, 0));
 
             int mods = 0;
             if (IsDlgButtonChecked(hwnd, ID_CHK_MOD_CTRL) == BST_CHECKED) mods |= MOD_CONTROL;
