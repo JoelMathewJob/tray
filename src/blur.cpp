@@ -56,43 +56,24 @@ void ApplyWindowBackdrop(HWND hwnd, BackdropType type) {
         (pfnSetWindowCompositionAttribute)GetProcAddress(hUser, "SetWindowCompositionAttribute") : nullptr;
 
     if (isTinted) {
-        // Tinted mode: frosted candy glass (~50% opacity)
-        DWORD backdropNone = 1; // DWMSBT_NONE
-        DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropNone, sizeof(backdropNone));
-
+        // Tinted mode: frosted candy glass
         if (pSetWindowCompositionAttribute) {
-            // Format: 0xAABBGGRR
-            DWORD tintColor = isDark ? 0x85241C22 : 0x75F4ECE6;
+            DWORD tintColor = isDark ? 0x85241C22 : 0x65F4ECE6;
             ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
             WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
             pSetWindowCompositionAttribute(hwnd, &data);
         }
     } else {
-        // Liquid Glass mode:
-        // In Light Mode, Windows 11 DWMSBT_ACRYLIC injects an opaque 95% blinding white sheet.
-        // We bypass that with DWMSBT_NONE + ACCENT_ENABLE_ACRYLICBLURBEHIND (0x28F0ECE8)
-        // so Light Mode is true translucent glassmorphism with wallpaper refraction!
-        if (!isDark) {
-            DWORD backdropNone = 1; // DWMSBT_NONE
-            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropNone, sizeof(backdropNone));
-
-            if (pSetWindowCompositionAttribute) {
-                DWORD tintColor = 0x28F0ECE8; // Translucent frosted glass (15% tint, 85% wallpaper refraction)
-                ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
-                WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-                pSetWindowCompositionAttribute(hwnd, &data);
-            }
-        } else {
-            // Dark Mode: true dark crystal glass
-            if (pSetWindowCompositionAttribute) {
-                DWORD tintColor = 0x2A18141C;
-                ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
-                WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-                pSetWindowCompositionAttribute(hwnd, &data);
-            }
-
-            DWORD backdropType = 3; // DWMSBT_ACRYLIC
-            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
+        // Liquid Glass mode: true translucent acrylic glass in both Light & Dark modes
+        if (pSetWindowCompositionAttribute) {
+            DWORD tintColor = isDark ? 0x2A18141C : 0x20F0ECE8;
+            ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
+            WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
+            pSetWindowCompositionAttribute(hwnd, &data);
         }
     }
+
+    // Always enable native DWM Acrylic backdrop in both Light and Dark mode
+    DWORD backdropType = 3; // DWMSBT_ACRYLIC
+    DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
 }

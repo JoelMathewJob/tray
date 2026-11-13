@@ -48,6 +48,10 @@ set(SOURCES
     src/media.cpp
     src/controls.h
     src/controls.cpp
+    src/actions.h
+    src/actions.cpp
+    src/player.h
+    src/player.cpp
     src/appbar.h
     src/appbar.cpp
     src/blur.h

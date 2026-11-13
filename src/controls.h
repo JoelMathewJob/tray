@@ -17,6 +17,8 @@ struct QuickControlsState
 
     bool wifiOn = true;
     bool bluetoothOn = true;
+    bool airplaneModeOn = false;
+    bool hotspotOn = false;
     bool nightLightOn = false;
     bool focusOn = false;
 
@@ -27,19 +29,26 @@ struct QuickControlsState
     PowerMode powerMode = POWER_MODE_PERFORMANCE;
 };
 
+constexpr int MAX_QUICK_TILES = 12;
+
 // Hit rects and interaction state
 extern RECT g_tabFilesRect;
 extern RECT g_tabControlsRect;
+extern RECT g_tabActionsRect;
+extern RECT g_tabMusicRect;
 extern RECT g_settingsBtnRect;
 extern RECT g_brightnessCapsuleRect;
 extern RECT g_volumeCapsuleRect;
-extern RECT g_tileRects[6];
+extern RECT g_tileRects[MAX_QUICK_TILES];
+extern int g_activeTileCount;
 extern RECT g_wifiArrowRect;
 extern RECT g_btArrowRect;
 extern RECT g_powerModeRects[3];
 
 extern bool g_tabFilesHovered;
 extern bool g_tabControlsHovered;
+extern bool g_tabActionsHovered;
+extern bool g_tabMusicHovered;
 extern bool g_settingsHovered;
 extern bool g_wifiArrowHovered;
 extern bool g_btArrowHovered;
@@ -58,9 +67,14 @@ void ToggleSystemMute();
 void SetSystemBrightness(float level);
 void ToggleWifi();
 void ToggleBluetooth();
+void ToggleAirplaneMode();
+void ToggleMobileHotspot();
 void ToggleNightLight();
 void ToggleFocus();
 void SetPowerMode(PowerMode mode);
+
+int GetQuickControlsDesiredWidth(int dockEdge);
+int GetQuickControlsDesiredHeight(int dockEdge);
 
 void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab, bool settingsHovered, int dockEdge);
 void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEdge);
