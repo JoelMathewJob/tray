@@ -25,6 +25,12 @@ enum NotchStyle
     NOTCH_FLOATING = 1  // Detached floating pill (Dynamic Island style)
 };
 
+enum ActiveTab
+{
+    TAB_FILES = 0,
+    TAB_CONTROLS = 1
+};
+
 struct AppSettings
 {
     bool moveFiles = false;
@@ -73,6 +79,7 @@ extern bool g_isExpanded;
 extern bool g_isSelfDragging;
 extern float g_SpinnerAngle;
 extern ThemePalette g_theme;
+extern ActiveTab g_activeTab;
 
 void CalculateTargetSize(bool expanded);
 void PruneMissingItems(HWND hwnd);

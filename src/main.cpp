@@ -3,16 +3,19 @@
 #include "updater.h"
 #include "media.h"
 #include "blur.h"
-
+#include "controls.h"
+#include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <thumbcache.h>
 #include <wincodec.h> // Robust image decoding (WebP, JPG, PNG)
-#include <dwmapi.h>  // For WM_DWMCOMPOSITIONCHANGED
+#include <dwmapi.h>   // For WM_DWMCOMPOSITIONCHANGED
 #include <cmath>
 #include <cstdlib>
 #include <cwctype>
 #include <algorithm>
+#include <gdiplus.h>
+#pragma comment(lib, "gdiplus.lib")
 
 #pragma comment(lib, "Windowscodecs.lib")
 
@@ -23,6 +26,7 @@ std::vector<PinnedItem> g_items;
 bool g_isExpanded = false;
 bool g_isSelfDragging = false;
 float g_SpinnerAngle = 0.0f;
+ActiveTab g_activeTab = TAB_FILES;
 
 static int g_nextItemId = 1;
 static int g_hoveredIndex = -1;
@@ -37,9 +41,6 @@ static bool g_dragWindowCandidate = false;
 static POINT g_dragWindowStartCursor = {0, 0};
 static float g_dragWindowStartRatio = 0.5f;
 
-static RECT g_settingsBtnRect = {};
-static bool g_settingsHovered = false;
-
 static float g_curW = COLLAPSED_W;
 static float g_curH = COLLAPSED_H;
 static float g_targetW = COLLAPSED_W;
@@ -49,46 +50,48 @@ static float g_scrollOffset = 0.0f;
 static float g_targetScroll = 0.0f;
 static float g_maxScroll = 0.0f;
 
-
 bool IsResolvedDarkMode()
 {
-    if (g_settings.themeMode == 1) return false; // Light Mode
-    if (g_settings.themeMode == 2) return true;  // Dark Mode
-    
+    if (g_settings.themeMode == 1)
+        return false; // Light Mode
+    if (g_settings.themeMode == 2)
+        return true; // Dark Mode
+
     DWORD value = 0, size = sizeof(DWORD);
-    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 
-                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS) {
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
+    {
         return (value == 0);
     }
-    return true; 
+    return true;
 }
 
 void UpdateThemeColors()
 {
     bool isDark = IsResolvedDarkMode();
-    
+
     // Borders: Crisp 1px outline
-    g_theme.border       = isDark ? RGB(75, 82, 102)  : RGB(145, 155, 175);
-    
+    g_theme.border = isDark ? RGB(75, 82, 102) : RGB(145, 155, 175);
+
     // TEXT: Crisp pure white in Dark Mode, Deep Charcoal Black in Light Mode (Maximum contrast)
-    g_theme.textPrimary  = isDark ? RGB(255, 255, 255): RGB(10, 14, 22); 
-    g_theme.textSec      = isDark ? RGB(175, 185, 205): RGB(50, 60, 75);
-    
+    g_theme.textPrimary = isDark ? RGB(255, 255, 255) : RGB(10, 10, 10);
+    g_theme.textSec = isDark ? RGB(175, 185, 205) : RGB(10, 10, 15);
+
     // Hover Pills
-    g_theme.pillHover    = isDark ? RGB(45, 50, 65)   : RGB(215, 222, 236);
-    g_theme.pillBorder   = isDark ? RGB(80, 88, 110)  : RGB(160, 172, 192);
-    
+    g_theme.pillHover = isDark ? RGB(45, 50, 65) : RGB(215, 222, 236);
+    g_theme.pillBorder = isDark ? RGB(80, 88, 110) : RGB(160, 172, 192);
+
     // Selection: Crisp Windows Blue
-    g_theme.selBg        = isDark ? RGB(20, 55, 105)  : RGB(200, 222, 255);
-    g_theme.selBorder    = isDark ? RGB(55, 150, 255) : RGB(30, 105, 230);
-    
+    g_theme.selBg = isDark ? RGB(20, 55, 105) : RGB(200, 222, 255);
+    g_theme.selBorder = isDark ? RGB(55, 150, 255) : RGB(30, 105, 230);
+
     // Tooltips & Dividers
-    g_theme.tipBg        = isDark ? RGB(28, 30, 38)   : RGB(225, 230, 242);
-    g_theme.div          = isDark ? RGB(65, 72, 88)   : RGB(185, 195, 210);
-    
+    g_theme.tipBg = isDark ? RGB(28, 30, 38) : RGB(225, 230, 242);
+    g_theme.div = isDark ? RGB(65, 72, 88) : RGB(185, 195, 210);
+
     // Scrollbars
-    g_theme.scrollTrack  = isDark ? RGB(20, 22, 28)   : RGB(218, 224, 234);
-    g_theme.scrollThumb  = isDark ? RGB(85, 92, 110)  : RGB(140, 148, 164);
+    g_theme.scrollTrack = isDark ? RGB(20, 22, 28) : RGB(218, 224, 234);
+    g_theme.scrollThumb = isDark ? RGB(85, 92, 110) : RGB(140, 148, 164);
 }
 // Bulletproof path normalizer for VS Code & Web browsers
 static std::wstring NormalizeWinPath(const std::wstring &rawPath)
@@ -227,6 +230,21 @@ void CalculateTargetSize(bool expanded)
     bool isVertical = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
     if (expanded)
     {
+        if (g_activeTab == TAB_CONTROLS)
+        {
+            if (isVertical)
+            {
+                g_targetW = 260.0f;
+                g_targetH = 416.0f;
+            }
+            else
+            {
+                g_targetW = 450.0f;
+                g_targetH = 226.0f;
+            }
+            return;
+        }
+
         int pinnedCount = 0;
         int unpinnedCount = 0;
         for (const auto &item : g_items)
@@ -244,7 +262,7 @@ void CalculateTargetSize(bool expanded)
 
         int maxScreenLen = isVertical ? (GetSystemMetrics(SM_CYSCREEN) - 120) : 980;
         float len = static_cast<float>(std::min(contentLen, std::max(460, maxScreenLen)));
-        float thick = g_settings.largeIcons ? 136.0f : 124.0f;
+        float thick = g_settings.largeIcons ? 156.0f : 144.0f;
 
         g_targetW = isVertical ? thick : len;
         g_targetH = isVertical ? len : thick;
@@ -446,11 +464,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Treat entire window as client area, preventing WS_THICKFRAME resizing handles
         return HTCLIENT;
 
+    case WM_NCACTIVATE:
+        // Force window to stay in active state so DWM Acrylic glass NEVER deactivates when losing focus!
+        return DefWindowProc(hwnd, WM_NCACTIVATE, TRUE, lParam);
+
     case WM_CREATE:
     {
         g_mainHwnd = hwnd;
         InitSettingsPath();
         LoadSettings();
+        InitQuickControls();
         UpdateThemeColors();
         CleanupOldTempFiles(3);
         ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
@@ -579,6 +602,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOUSEWHEEL:
     {
+        if (g_isExpanded && g_activeTab == TAB_CONTROLS)
+        {
+            int x = static_cast<short>(LOWORD(lParam));
+            int y = static_cast<short>(HIWORD(lParam));
+            POINT pt = {x, y};
+            ScreenToClient(hwnd, &pt);
+            short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
+            if (HandleQuickControlsWheel(hwnd, pt, zDelta))
+                return 0;
+        }
+
         if (g_isExpanded && g_maxScroll > 0.0f)
         {
             short zDelta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -635,6 +669,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
 
         POINT pt = {x, y};
+        bool newFilesHover = PtInRect(&g_tabFilesRect, pt);
+        bool newControlsHover = PtInRect(&g_tabControlsRect, pt);
+        if (newFilesHover != g_tabFilesHovered || newControlsHover != g_tabControlsHovered)
+        {
+            g_tabFilesHovered = newFilesHover;
+            g_tabControlsHovered = newControlsHover;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+
+        if (g_isExpanded && g_activeTab == TAB_CONTROLS)
+        {
+            if (HandleQuickControlsMouseMove(hwnd, pt))
+                return 0;
+        }
+
         bool newSettingsHover = PtInRect(&g_settingsBtnRect, pt);
         if (newSettingsHover != g_settingsHovered)
         {
@@ -680,10 +729,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_mouseTrackingActive = false;
         g_hoveredIndex = -1;
         g_settingsHovered = false;
+        g_tabFilesHovered = false;
+        g_tabControlsHovered = false;
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
         g_isDraggingWindow = false;
         g_dragWindowCandidate = false;
+        HandleQuickControlsMouseUp(hwnd);
 
         if (!g_isMenuOpen && g_isExpanded)
         {
@@ -703,12 +755,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int y = static_cast<short>(HIWORD(lParam));
         POINT pt = {x, y};
 
+        if (PtInRect(&g_tabFilesRect, pt))
+        {
+            if (g_activeTab != TAB_FILES)
+            {
+                g_activeTab = TAB_FILES;
+                CalculateTargetSize(true);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
+        if (PtInRect(&g_tabControlsRect, pt))
+        {
+            if (g_activeTab != TAB_CONTROLS)
+            {
+                g_activeTab = TAB_CONTROLS;
+                UpdateQuickControlsState();
+                CalculateTargetSize(true);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
         if (PtInRect(&g_settingsBtnRect, pt))
         {
             OpenSettingsDialog(hwnd);
             CalculateTargetSize(g_isExpanded);
             SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
             return 0;
+        }
+
+        if (g_isExpanded && g_activeTab == TAB_CONTROLS)
+        {
+            if (HandleQuickControlsClick(hwnd, pt))
+                return 0;
         }
 
         bool clickedAnItem = false;
@@ -789,6 +872,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_LBUTTONUP:
+        HandleQuickControlsMouseUp(hwnd);
         if (g_dragWindowCandidate || g_isDraggingWindow)
         {
             if (g_isDraggingWindow)
@@ -940,12 +1024,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int height = std::max(1, static_cast<int>(clientRc.bottom));
 
         HDC memDC = CreateCompatibleDC(hdc);
-        HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
+
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height; // Top-down DIB
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        void *pBits = nullptr;
+        HBITMAP memBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pBits, nullptr, 0);
         HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
 
         bool isTinted = (g_settings.backdropStyle == 1);
-        bool isDark   = IsResolvedDarkMode();
-        bool isVert   = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
+        bool isDark = IsResolvedDarkMode();
+        bool isVert = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
         bool isCollapsed = (g_curH < 35.0f && !isVert) || (g_curW < 35.0f && isVert) || !g_isExpanded;
 
         // 1. Pure black RGB(0,0,0) fill allows DWM Acrylic blur to shine through natively across the hardware-rounded window
@@ -953,26 +1047,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         FillRect(memDC, &clientRc, bgBrush);
         DeleteObject(bgBrush);
 
-        // 2. Apple-style 1px specular top rim highlight for realistic glass reflection (no inner border conflicting with DWM)
-        HPEN rimPen = CreatePen(PS_SOLID, 1, isDark ? RGB(75, 82, 105) : RGB(255, 255, 255));
-        HPEN oldPen = (HPEN)SelectObject(memDC, rimPen);
-        MoveToEx(memDC, 16, 1, nullptr);
-        LineTo(memDC, width - 16, 1);
-        SelectObject(memDC, oldPen);
-        DeleteObject(rimPen);
-
         if (isCollapsed)
         {
-            for (auto &item : g_items) item.rect = {0, 0, 0, 0};
+            for (auto &item : g_items)
+                item.rect = {0, 0, 0, 0};
 
-            // Centered grab-pill indicator
+            // Centered grab-pill indicator (high contrast in both light and dark modes)
             int pillW = 38;
             int pillH = 4;
             int pillX = isVert ? (width - pillH) / 2 : (width - pillW) / 2;
             int pillY = isVert ? (height - pillW) / 2 : (height - pillH) / 2;
 
-            COLORREF pillColor = isDark ? RGB(90, 95, 115) : RGB(140, 145, 160);
-            COLORREF pillBorder = isDark ? RGB(65, 70, 85) : RGB(170, 175, 190);
+            COLORREF pillColor = isDark ? RGB(100, 108, 130) : RGB(45, 55, 75);
+            COLORREF pillBorder = isDark ? RGB(75, 82, 100) : RGB(30, 40, 58);
             HBRUSH pillBrush = CreateSolidBrush(pillColor);
             HPEN pillPen = CreatePen(PS_SOLID, 1, pillBorder);
             SelectObject(memDC, pillBrush);
@@ -983,54 +1070,50 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         }
         else
         {
-            g_settingsBtnRect = isVert
-                                    ? RECT{(width - 32) / 2, height - 38, (width + 32) / 2, height - 10}
-                                    : RECT{width - 38, 12, width - 12, 38};
-
-            if (g_settingsHovered)
+            if (g_activeTab == TAB_CONTROLS)
             {
-                HBRUSH gearHover = CreateSolidBrush(g_theme.pillHover);
-                HPEN gearPen = CreatePen(PS_SOLID, 1, g_theme.pillBorder);
-                SelectObject(memDC, gearHover);
-                SelectObject(memDC, gearPen);
-                RoundRect(memDC, g_settingsBtnRect.left, g_settingsBtnRect.top, g_settingsBtnRect.right, g_settingsBtnRect.bottom, 8, 8);
-                DeleteObject(gearHover);
-                DeleteObject(gearPen);
+                RenderQuickControls(memDC, width, height, isDark, g_settings.dockEdge);
             }
-            HFONT gearFont = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
-            HFONT oldGFont = (HFONT)SelectObject(memDC, gearFont);
-            SetBkMode(memDC, TRANSPARENT);
-            SetTextColor(memDC, g_settingsHovered ? g_theme.textPrimary : g_theme.textSec);
-            DrawTextW(memDC, L"\x2699", -1, &g_settingsBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-            SelectObject(memDC, oldGFont);
-            DeleteObject(gearFont);
-
-            if (g_items.empty())
+            else
             {
-                HFONT hFont = CreateFontW(14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-                HFONT oldFont = (HFONT)SelectObject(memDC, hFont);
-                SetBkMode(memDC, TRANSPARENT);
-                SetTextColor(memDC, g_theme.textPrimary);
+                if (g_items.empty())
+{
+    Gdiplus::Graphics graphics(memDC);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
-                RECT textRc = {0, 0, width, height};
-                DrawTextW(memDC, isVert ? L"Drop here" : L"Drop files, web media, or paste (Ctrl+V) here", -1, &textRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-                SelectObject(memDC, oldFont);
-                DeleteObject(hFont);
-            }
+    Gdiplus::FontFamily fontFamily(L"Segoe UI");
+    Gdiplus::Font font(&fontFamily, 14.0f, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+
+    COLORREF c = g_theme.textPrimary;
+    Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, GetRValue(c), GetGValue(c), GetBValue(c)));
+
+    Gdiplus::StringFormat format;
+    format.SetAlignment(Gdiplus::StringAlignmentCenter);
+    format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+
+    std::wstring emptyStr = isVert ? L"Drop here" : L"Drop files, web media, or paste (Ctrl+V) here";
+    Gdiplus::RectF layoutRect(0.0f, 26.0f, static_cast<float>(width), static_cast<float>(height - 26));
+
+    graphics.DrawString(emptyStr.c_str(), -1, &font, layoutRect, &format, &textBrush);
+}
+
             else
             {
                 int baseItemW = g_settings.largeIcons ? 68 : 60;
                 int baseItemH = g_settings.largeIcons ? 76 : 68;
                 int baseIconSize = g_settings.largeIcons ? 40 : 32;
                 int itemSpacing = 8;
-                int startY = 14;
+                int startY = 30;
 
                 std::vector<int> pinnedIndices;
                 std::vector<int> unpinnedIndices;
                 for (int i = 0; i < static_cast<int>(g_items.size()); ++i)
                 {
-                    if (g_items[i].isPinned) pinnedIndices.push_back(i);
-                    else unpinnedIndices.push_back(i);
+                    if (g_items[i].isPinned)
+                        pinnedIndices.push_back(i);
+                    else
+                        unpinnedIndices.push_back(i);
                 }
 
                 HFONT hFont = CreateFontW(g_settings.largeIcons ? -12 : -11, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -1050,7 +1133,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     RECT pillRect;
                     if (isVert)
                     {
-                        int cardX = (width - baseItemW) / 2;
+                        bool isLeft = (g_settings.dockEdge == EDGE_LEFT);
+                        int cardX = isLeft ? (42 + ((width - 42) - baseItemW) / 2) : (((width - 42) - baseItemW) / 2);
                         pillRect = {cardX - shiftW, drawCoord - shiftH, cardX + baseItemW + shiftW, drawCoord + baseItemH + shiftH};
                     }
                     else
@@ -1063,13 +1147,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     {
                         hitRect.top = std::max<LONG>(hitRect.top, clipStart);
                         hitRect.bottom = std::min<LONG>(hitRect.bottom, clipEnd);
-                        if (hitRect.bottom <= hitRect.top) hitRect = {0, 0, 0, 0};
+                        if (hitRect.bottom <= hitRect.top)
+                            hitRect = {0, 0, 0, 0};
                     }
                     else
                     {
                         hitRect.left = std::max<LONG>(hitRect.left, clipStart);
                         hitRect.right = std::min<LONG>(hitRect.right, clipEnd);
-                        if (hitRect.right <= hitRect.left) hitRect = {0, 0, 0, 0};
+                        if (hitRect.right <= hitRect.left)
+                            hitRect = {0, 0, 0, 0};
                     }
                     g_items[idx].rect = hitRect;
 
@@ -1116,7 +1202,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                     }
 
                     RECT textRc = {pillRect.left + 2, pillRect.bottom - 20, pillRect.right - 2, pillRect.bottom - 3};
-                    
+
                     // NEW: Draw a subtle mini-pill behind the label so DWM glass doesn't make dark text transparent
                     if (!g_items[idx].isSelected && idx != g_hoveredIndex)
                     {
@@ -1127,11 +1213,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
                         RECT calcRc = {0, 0, 0, 0};
                         DrawTextW(memDC, g_items[idx].name.c_str(), -1, &calcRc, DT_CALCRECT | DT_SINGLELINE);
-                        
+
                         // Calculate a perfectly fitted, padded mini-pill
                         int textW = std::min<int>(calcRc.right - calcRc.left + 12, textRc.right - textRc.left);
                         int textX = textRc.left + ((textRc.right - textRc.left) - textW) / 2;
-                        
+
                         RoundRect(memDC, textX, textRc.top - 1, textX + textW, textRc.bottom + 1, 8, 8);
 
                         SelectObject(memDC, oldB);
@@ -1288,6 +1374,25 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
         }
 
+        // Render navigation bar on top so tab buttons & settings gear are never hidden behind content!
+        RenderTopNavBar(memDC, width, height, isDark, g_activeTab, g_settingsHovered, g_settings.dockEdge);
+    }
+
+        // Fix GDI Alpha keying: Set Alpha = 255 on all rendered foreground pixels (text, icons, badges)
+        // so Windows DWM never punches holes or makes dark text transparent to the desktop wallpaper!
+        if (pBits)
+        {
+            DWORD *pixels = static_cast<DWORD *>(pBits);
+            int totalPixels = width * height;
+            for (int i = 0; i < totalPixels; ++i)
+            {
+                if (pixels[i] & 0x00FFFFFF)
+                {
+                    pixels[i] |= 0xFF000000;
+                }
+            }
+        }
+
         BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
         SelectObject(memDC, oldBitmap);
         DeleteObject(memBitmap);
@@ -1295,8 +1400,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         EndPaint(hwnd, &ps);
         return 0;
     }
-
-
 
     case WM_POWERBROADCAST:
     {
@@ -1320,6 +1423,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_DESTROY:
+        ShutdownQuickControls();
         RevokeTrayDropTarget(hwnd);
         KillTimer(hwnd, ANIM_TIMER_ID);
         for (auto &item : g_items)
@@ -1352,8 +1456,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
-{
+{   
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     OleInitialize(nullptr);
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken = 0;
+    if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok)
+        return -1;
 
     const wchar_t CLASS_NAME[] = L"WinTrayAppWindow";
     WNDCLASS wc = {};
@@ -1362,7 +1472,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    
+
     wc.hbrBackground = nullptr;
 
     RegisterClass(&wc);
@@ -1391,6 +1501,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     }
 
     UnregisterHotKey(hwnd, HOTKEY_TOGGLE_ID);
+    Gdiplus::GdiplusShutdown(gdiplusToken);
     OleUninitialize();
     return 0;
 }

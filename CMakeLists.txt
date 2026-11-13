@@ -46,6 +46,8 @@ set(SOURCES
     src/updater.cpp
     src/media.h
     src/media.cpp
+    src/controls.h
+    src/controls.cpp
     src/appbar.h
     src/appbar.cpp
     src/blur.h
@@ -70,6 +72,10 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Comctl32
     Crypt32
     Gdi32
+    Powrprof
+    Wlanapi
+    wbemuuid
+    windowsapp
     d2d1
     dwrite
 )

@@ -31,24 +31,23 @@ void ApplyWindowBackdrop(HWND hwnd, BackdropType type) {
     bool isTinted = (g_settings.backdropStyle == 1);
     bool isDark   = IsResolvedDarkMode();
 
-    // 1. Set Immersive Dark Mode for DWM
+    // 1. Completely disable DWM drop shadows
+    int ncPolicy = 1; // DWMNCRP_DISABLED - removes window drop shadow
+    DwmSetWindowAttribute(hwnd, 2 /* DWMWA_NCRENDERING_POLICY */, &ncPolicy, sizeof(ncPolicy));
+
+    // 2. Set Immersive Dark Mode for DWM
     BOOL darkMode = isDark ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof(darkMode));
 
-    // 2. Enable native Windows 11 hardware-accelerated rounded corners
-    DWORD cornerPref = 2; // DWMWCP_ROUND (native GPU rounding for window bounds, blur, and border)
+    // 3. Enable native Windows 11 hardware-accelerated rounded corners
+    DWORD cornerPref = 2; // DWMWCP_ROUND (native GPU rounding for window bounds and blur)
     DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &cornerPref, sizeof(cornerPref));
 
-    // 3. Set subtle 1px hardware frame color (eliminates thick white borders)
-    COLORREF borderColor;
-    if (isTinted) {
-        borderColor = isDark ? RGB(55, 60, 75) : RGB(190, 198, 212);
-    } else {
-        borderColor = isDark ? RGB(65, 72, 90) : RGB(200, 208, 224);
-    }
+    // 4. Remove DWM border completely (removes black/white outer border!)
+    COLORREF borderColor = 0xFFFFFFFE; // DWMWA_COLOR_NONE - completely disables outer frame
     DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &borderColor, sizeof(borderColor));
 
-    // 4. Extend frame into client area for DWM glass composition
+    // 5. Extend frame into client area for DWM glass composition
     MARGINS margins = { -1, -1, -1, -1 };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
 
@@ -57,7 +56,7 @@ void ApplyWindowBackdrop(HWND hwnd, BackdropType type) {
         (pfnSetWindowCompositionAttribute)GetProcAddress(hUser, "SetWindowCompositionAttribute") : nullptr;
 
     if (isTinted) {
-        // Tinted mode: disable system backdrop, apply Acrylic with frosted color
+        // Tinted mode: frosted candy glass (~50% opacity)
         DWORD backdropNone = 1; // DWMSBT_NONE
         DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropNone, sizeof(backdropNone));
 
@@ -69,24 +68,31 @@ void ApplyWindowBackdrop(HWND hwnd, BackdropType type) {
             pSetWindowCompositionAttribute(hwnd, &data);
         }
     } else {
-        // Liquid Glass mode: Use Windows 11 native Acrylic system backdrop (DWMSBT_ACRYLIC = 3)
-        // First, clear any old accent policy
-        if (pSetWindowCompositionAttribute) {
-            ACCENT_POLICY policy = { ACCENT_DISABLED, 0, 0, 0 };
-            WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-            pSetWindowCompositionAttribute(hwnd, &data);
-        }
+        // Liquid Glass mode:
+        // In Light Mode, Windows 11 DWMSBT_ACRYLIC injects an opaque 95% blinding white sheet.
+        // We bypass that with DWMSBT_NONE + ACCENT_ENABLE_ACRYLICBLURBEHIND (0x28F0ECE8)
+        // so Light Mode is true translucent glassmorphism with wallpaper refraction!
+        if (!isDark) {
+            DWORD backdropNone = 1; // DWMSBT_NONE
+            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropNone, sizeof(backdropNone));
 
-        // Apply native Windows 11 Acrylic Glass
-        DWORD backdropType = 3; // DWMSBT_ACRYLIC (true Windows 11 glassmorphism)
-        HRESULT hr = DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
+            if (pSetWindowCompositionAttribute) {
+                DWORD tintColor = 0x28F0ECE8; // Translucent frosted glass (15% tint, 85% wallpaper refraction)
+                ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
+                WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
+                pSetWindowCompositionAttribute(hwnd, &data);
+            }
+        } else {
+            // Dark Mode: true dark crystal glass
+            if (pSetWindowCompositionAttribute) {
+                DWORD tintColor = 0x2A18141C;
+                ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
+                WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
+                pSetWindowCompositionAttribute(hwnd, &data);
+            }
 
-        if (FAILED(hr) && pSetWindowCompositionAttribute) {
-            // Fallback for Windows 10
-            DWORD tintColor = isDark ? 0x2A18141C : 0x20F6F3EE;
-            ACCENT_POLICY policy = { ACCENT_ENABLE_ACRYLICBLURBEHIND, 2, tintColor, 0 };
-            WINDOWCOMPOSITIONATTRIBDATA data = { WCA_ACCENT_POLICY, &policy, sizeof(policy) };
-            pSetWindowCompositionAttribute(hwnd, &data);
+            DWORD backdropType = 3; // DWMSBT_ACRYLIC
+            DwmSetWindowAttribute(hwnd, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdropType, sizeof(backdropType));
         }
     }
 }
