@@ -4,6 +4,8 @@
 #include "media.h"
 #include "blur.h"
 #include "controls.h"
+#include "actions.h"
+#include "player.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -232,16 +234,20 @@ void CalculateTargetSize(bool expanded)
     {
         if (g_activeTab == TAB_CONTROLS)
         {
-            if (isVertical)
-            {
-                g_targetW = 260.0f;
-                g_targetH = 416.0f;
-            }
-            else
-            {
-                g_targetW = 450.0f;
-                g_targetH = 226.0f;
-            }
+            g_targetW = static_cast<float>(GetQuickControlsDesiredWidth(g_settings.dockEdge));
+            g_targetH = static_cast<float>(GetQuickControlsDesiredHeight(g_settings.dockEdge));
+            return;
+        }
+        if (g_activeTab == TAB_ACTIONS)
+        {
+            g_targetW = static_cast<float>(GetActionsTabDesiredWidth(g_settings.dockEdge));
+            g_targetH = static_cast<float>(GetActionsTabDesiredHeight(g_settings.dockEdge));
+            return;
+        }
+        if (g_activeTab == TAB_MUSIC)
+        {
+            g_targetW = static_cast<float>(GetMusicPlayerDesiredWidth(g_settings.dockEdge));
+            g_targetH = static_cast<float>(GetMusicPlayerDesiredHeight(g_settings.dockEdge));
             return;
         }
 
@@ -272,6 +278,17 @@ void CalculateTargetSize(bool expanded)
         g_targetW = isVertical ? COLLAPSED_H : COLLAPSED_W;
         g_targetH = isVertical ? COLLAPSED_W : COLLAPSED_H;
     }
+}
+
+void SyncTrayOrientation(HWND hwnd)
+{
+    if (!hwnd || !IsWindow(hwnd))
+        return;
+    CalculateTargetSize(g_isExpanded);
+    g_curW = g_targetW;
+    g_curH = g_targetH;
+    UpdateTrayWindowGeometry(hwnd);
+    InvalidateRect(hwnd, nullptr, TRUE);
 }
 
 void UpdateTrayWindowGeometry(HWND hwnd)
@@ -474,12 +491,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         InitSettingsPath();
         LoadSettings();
         InitQuickControls();
+        InitActionsEngine();
+        InitPlayerEngine();
         UpdateThemeColors();
         CleanupOldTempFiles(3);
         ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
         RegisterTrayDropTarget(hwnd);
         CalculateTargetSize(false);
         UpdateTrayWindowGeometry(hwnd);
+        SetWindowDisplayAffinity(hwnd, 0x00000011 /* WDA_EXCLUDEFROMCAPTURE */);
+        SetTimer(hwnd, 889, 100, nullptr); // Status timer for collapsed HUD, recording timer, visualizer & live music scrubber
         return 0;
     }
 
@@ -530,6 +551,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_TIMER:
     {
+        if (wParam == 889)
+        {
+            if (g_recording.isRecording || 
+                (!g_isExpanded && g_settings.collapsedStyle != COLLAPSED_DEFAULT) ||
+                (g_isExpanded && g_activeTab == TAB_MUSIC && (g_media.isPlaying || g_media.hasActiveSession)))
+            {
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
+        }
         if (wParam == 9999)
         {
             // Delayed re-apply after power resume
@@ -671,16 +702,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         POINT pt = {x, y};
         bool newFilesHover = PtInRect(&g_tabFilesRect, pt);
         bool newControlsHover = PtInRect(&g_tabControlsRect, pt);
-        if (newFilesHover != g_tabFilesHovered || newControlsHover != g_tabControlsHovered)
+        bool newActionsHover = PtInRect(&g_tabActionsRect, pt);
+        bool newMusicHover = PtInRect(&g_tabMusicRect, pt);
+        if (newFilesHover != g_tabFilesHovered || newControlsHover != g_tabControlsHovered || newActionsHover != g_tabActionsHovered || newMusicHover != g_tabMusicHovered)
         {
             g_tabFilesHovered = newFilesHover;
             g_tabControlsHovered = newControlsHover;
+            g_tabActionsHovered = newActionsHover;
+            g_tabMusicHovered = newMusicHover;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
 
         if (g_isExpanded && g_activeTab == TAB_CONTROLS)
         {
             if (HandleQuickControlsMouseMove(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_ACTIONS)
+        {
+            if (HandleActionsTabMouseMove(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_MUSIC)
+        {
+            if (HandleMusicPlayerMouseMove(hwnd, pt))
                 return 0;
         }
 
@@ -731,11 +776,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_settingsHovered = false;
         g_tabFilesHovered = false;
         g_tabControlsHovered = false;
+        g_tabActionsHovered = false;
+        g_tabMusicHovered = false;
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
         g_isDraggingWindow = false;
         g_dragWindowCandidate = false;
         HandleQuickControlsMouseUp(hwnd);
+        HandleMusicPlayerMouseUp(hwnd);
 
         if (!g_isMenuOpen && g_isExpanded)
         {
@@ -780,6 +828,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (PtInRect(&g_tabActionsRect, pt))
+        {
+            if (g_activeTab != TAB_ACTIONS)
+            {
+                g_activeTab = TAB_ACTIONS;
+                CalculateTargetSize(true);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
+        if (PtInRect(&g_tabMusicRect, pt))
+        {
+            if (g_activeTab != TAB_MUSIC)
+            {
+                g_activeTab = TAB_MUSIC;
+                CalculateTargetSize(true);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
         if (PtInRect(&g_settingsBtnRect, pt))
         {
             OpenSettingsDialog(hwnd);
@@ -791,6 +863,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (g_isExpanded && g_activeTab == TAB_CONTROLS)
         {
             if (HandleQuickControlsClick(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_ACTIONS)
+        {
+            if (HandleActionsTabClick(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_MUSIC)
+        {
+            if (HandleMusicPlayerClick(hwnd, pt))
                 return 0;
         }
 
@@ -873,6 +955,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_LBUTTONUP:
         HandleQuickControlsMouseUp(hwnd);
+        HandleMusicPlayerMouseUp(hwnd);
         if (g_dragWindowCandidate || g_isDraggingWindow)
         {
             if (g_isDraggingWindow)
@@ -1042,8 +1125,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         bool isVert = (g_settings.dockEdge == EDGE_LEFT || g_settings.dockEdge == EDGE_RIGHT);
         bool isCollapsed = (g_curH < 35.0f && !isVert) || (g_curW < 35.0f && isVert) || !g_isExpanded;
 
-        // 1. Pure black RGB(0,0,0) fill allows DWM Acrylic blur to shine through natively across the hardware-rounded window
-        HBRUSH bgBrush = CreateSolidBrush(RGB(0, 0, 0));
+        // 1. Initialize background:
+        // In Dark Mode: pure RGB(0,0,0) allows DWM Acrylic blur to shine through natively.
+        // In Light Mode: pre-fill with the exact light surface tint RGB(242, 246, 252) so GDI ClearType
+        // anti-aliases text and icons smoothly against light glass instead of pitch black!
+        COLORREF dockBg = isDark ? RGB(0, 0, 0) : RGB(242, 246, 252);
+        DWORD dockBgDword = (GetRValue(dockBg) << 16) | (GetGValue(dockBg) << 8) | GetBValue(dockBg);
+        HBRUSH bgBrush = CreateSolidBrush(dockBg);
         FillRect(memDC, &clientRc, bgBrush);
         DeleteObject(bgBrush);
 
@@ -1052,27 +1140,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             for (auto &item : g_items)
                 item.rect = {0, 0, 0, 0};
 
-            // Centered grab-pill indicator (high contrast in both light and dark modes)
-            int pillW = 38;
-            int pillH = 4;
-            int pillX = isVert ? (width - pillH) / 2 : (width - pillW) / 2;
-            int pillY = isVert ? (height - pillW) / 2 : (height - pillH) / 2;
-
-            COLORREF pillColor = isDark ? RGB(100, 108, 130) : RGB(45, 55, 75);
-            COLORREF pillBorder = isDark ? RGB(75, 82, 100) : RGB(30, 40, 58);
-            HBRUSH pillBrush = CreateSolidBrush(pillColor);
-            HPEN pillPen = CreatePen(PS_SOLID, 1, pillBorder);
-            SelectObject(memDC, pillBrush);
-            SelectObject(memDC, pillPen);
-            RoundRect(memDC, pillX, pillY, pillX + (isVert ? pillH : pillW), pillY + (isVert ? pillW : pillH), 4, 4);
-            DeleteObject(pillBrush);
-            DeleteObject(pillPen);
+            // Render customized collapsed view: Recording HUD / Clock / Music Visualizer / Pill
+            RenderCollapsedDockContent(memDC, width, height, isDark, isVert);
         }
         else
         {
             if (g_activeTab == TAB_CONTROLS)
             {
                 RenderQuickControls(memDC, width, height, isDark, g_settings.dockEdge);
+            }
+            else if (g_activeTab == TAB_ACTIONS)
+            {
+                RenderActionsTab(memDC, width, height, isDark, g_settings.dockEdge);
+            }
+            else if (g_activeTab == TAB_MUSIC)
+            {
+                RenderMusicPlayerTab(memDC, width, height, isDark, g_settings.dockEdge);
             }
             else
             {
@@ -1376,6 +1459,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         // Render navigation bar on top so tab buttons & settings gear are never hidden behind content!
         RenderTopNavBar(memDC, width, height, isDark, g_activeTab, g_settingsHovered, g_settings.dockEdge);
+
+        // Render floating notification toast alert if active!
+        if (g_toast.active)
+        {
+            RenderActionToast(memDC, width, height, isDark);
+        }
     }
 
         // Fix GDI Alpha keying: Set Alpha = 255 on all rendered foreground pixels (text, icons, badges)
@@ -1384,11 +1473,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             DWORD *pixels = static_cast<DWORD *>(pBits);
             int totalPixels = width * height;
-            for (int i = 0; i < totalPixels; ++i)
+            if (isDark)
             {
-                if (pixels[i] & 0x00FFFFFF)
+                for (int i = 0; i < totalPixels; ++i)
                 {
-                    pixels[i] |= 0xFF000000;
+                    if (pixels[i] & 0x00FFFFFF)
+                    {
+                        pixels[i] |= 0xFF000000;
+                    }
+                }
+            }
+            else
+            {
+                for (int i = 0; i < totalPixels; ++i)
+                {
+                    if ((pixels[i] & 0x00FFFFFF) == dockBgDword)
+                    {
+                        // Untouched dock background pixel: pure acrylic backdrop passthrough
+                        pixels[i] = 0x00000000;
+                    }
+                    else
+                    {
+                        // Rendered foreground (smooth ClearType anti-aliased text, icons, tiles)
+                        pixels[i] |= 0xFF000000;
+                    }
                 }
             }
         }
@@ -1423,7 +1531,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_DESTROY:
+        ShutdownPlayerEngine();
         ShutdownQuickControls();
+        ShutdownActionsEngine();
+        KillTimer(hwnd, 889);
         RevokeTrayDropTarget(hwnd);
         KillTimer(hwnd, ANIM_TIMER_ID);
         for (auto &item : g_items)

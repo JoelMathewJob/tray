@@ -31,16 +31,36 @@ static bool g_comInitialized = false;
 // Global interaction and hit rects
 RECT g_tabFilesRect = {};
 RECT g_tabControlsRect = {};
+RECT g_tabActionsRect = {};
+RECT g_tabMusicRect = {};
 RECT g_settingsBtnRect = {};
 RECT g_brightnessCapsuleRect = {};
 RECT g_volumeCapsuleRect = {};
-RECT g_tileRects[6] = {};
+RECT g_tileRects[MAX_QUICK_TILES] = {};
+int g_activeTileCount = 0;
 RECT g_wifiArrowRect = {};
 RECT g_btArrowRect = {};
 RECT g_powerModeRects[3] = {};
 
+enum QuickTileId
+{
+    TILE_WIFI = 0,
+    TILE_BLUETOOTH = 1,
+    TILE_AIRPLANE = 2,
+    TILE_HOTSPOT = 3,
+    TILE_NIGHTLIGHT = 4,
+    TILE_FOCUS = 5,
+    TILE_MUTE = 6,
+    TILE_BATTERY = 7,
+    TILE_LOCKPC = 8
+};
+
+static QuickTileId s_activeTileIds[MAX_QUICK_TILES] = {};
+
 bool g_tabFilesHovered = false;
 bool g_tabControlsHovered = false;
+bool g_tabActionsHovered = false;
+bool g_tabMusicHovered = false;
 bool g_settingsHovered = false;
 bool g_wifiArrowHovered = false;
 bool g_btArrowHovered = false;
@@ -875,6 +895,31 @@ void ToggleFocus()
     g_state.focusOn = !g_state.focusOn;
 }
 
+void ToggleAirplaneMode()
+{
+    g_state.airplaneModeOn = !g_state.airplaneModeOn;
+    if (g_state.airplaneModeOn)
+    {
+        g_state.wifiOn = false;
+        g_state.bluetoothOn = false;
+        SetHardwareWifiState(false);
+        SetBluetoothRadioNative(false);
+    }
+    else
+    {
+        g_state.wifiOn = true;
+        g_state.bluetoothOn = true;
+        SetHardwareWifiState(true);
+        SetBluetoothRadioNative(true);
+    }
+}
+
+void ToggleMobileHotspot()
+{
+    g_state.hotspotOn = !g_state.hotspotOn;
+    ShellExecuteW(nullptr, L"open", L"ms-settings:network-mobilehotspot", nullptr, nullptr, SW_SHOW);
+}
+
 void SetPowerMode(PowerMode mode)
 {
     g_state.powerMode = mode;
@@ -934,9 +979,16 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int startY = 24;
         int gap = 8;
 
+        int tabCount = g_settings.showMusicTab ? 4 : 3;
         g_tabFilesRect = {barX, startY, barX + btnW, startY + btnH};
         g_tabControlsRect = {barX, startY + btnH + gap, barX + btnW, startY + (btnH + gap) * 2};
-        int divY = startY + (btnH + gap) * 2 + 6;
+        g_tabActionsRect = {barX, startY + (btnH + gap) * 2, barX + btnW, startY + (btnH + gap) * 3};
+        if (g_settings.showMusicTab)
+            g_tabMusicRect = {barX, startY + (btnH + gap) * 3, barX + btnW, startY + (btnH + gap) * 4};
+        else
+            g_tabMusicRect = {0, 0, 0, 0};
+
+        int divY = startY + (btnH + gap) * tabCount + 6;
         int gearY = divY + 8;
         RECT gearRc = {barX, gearY, barX + btnW, gearY + btnH};
         g_settingsBtnRect = gearRc;
@@ -979,6 +1031,47 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             DeleteObject(noPen);
         }
 
+        // Actions Tab
+        bool actionsActive = (activeTab == TAB_ACTIONS);
+        COLORREF actionsCol = actionsActive ? textActive : (g_tabActionsHovered ? textHover : textInactive);
+        SetTextColor(hdc, actionsCol);
+        DrawTextW(hdc, L"\xE722", -1, &g_tabActionsRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        if (actionsActive)
+        {
+            HBRUSH dotB = CreateSolidBrush(actionsCol);
+            HPEN noPen = CreatePen(PS_NULL, 0, 0);
+            SelectObject(hdc, dotB);
+            SelectObject(hdc, noPen);
+            int dotX = isLeft ? (g_tabActionsRect.right + 2) : (g_tabActionsRect.left - 5);
+            int dotY = g_tabActionsRect.top + btnH / 2 - 2;
+            RoundRect(hdc, dotX, dotY, dotX + 3, dotY + 4, 2, 2);
+            DeleteObject(dotB);
+            DeleteObject(noPen);
+        }
+
+        // Music Tab
+        if (g_settings.showMusicTab)
+        {
+            bool musicActive = (activeTab == TAB_MUSIC);
+            COLORREF musicCol = musicActive ? textActive : (g_tabMusicHovered ? textHover : textInactive);
+            SetTextColor(hdc, musicCol);
+            DrawTextW(hdc, L"\xE8D6", -1, &g_tabMusicRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (musicActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(musicCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = isLeft ? (g_tabMusicRect.right + 2) : (g_tabMusicRect.left - 5);
+                int dotY = g_tabMusicRect.top + btnH / 2 - 2;
+                RoundRect(hdc, dotX, dotY, dotX + 3, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+        }
+
         // Horizontal Divider in vertical bar
         HPEN divPen = CreatePen(PS_SOLID, 1, isDark ? RGB(65, 70, 85) : RGB(185, 195, 210));
         SelectObject(hdc, divPen);
@@ -1002,11 +1095,17 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int gap = 6;
         int divW = 12;
 
-        int totalBarW = btnW + gap + btnW + gap + divW + gap + btnW;
+        int tabCount = g_settings.showMusicTab ? 4 : 3;
+        int totalBarW = (btnW + gap) * tabCount + divW + gap + btnW;
         int startX = (width - totalBarW) / 2;
 
         g_tabFilesRect = {startX, rowY, startX + btnW, rowY + btnH};
         g_tabControlsRect = {startX + btnW + gap, rowY, startX + btnW + gap + btnW, rowY + btnH};
+        g_tabActionsRect = {startX + (btnW + gap) * 2, rowY, startX + (btnW + gap) * 2 + btnW, rowY + btnH};
+        if (g_settings.showMusicTab)
+            g_tabMusicRect = {startX + (btnW + gap) * 3, rowY, startX + (btnW + gap) * 3 + btnW, rowY + btnH};
+        else
+            g_tabMusicRect = {0, 0, 0, 0};
 
         // Files Tab
         bool filesActive = (activeTab == TAB_FILES);
@@ -1046,8 +1145,49 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             DeleteObject(noPen);
         }
 
+        // Actions Tab
+        bool actionsActive = (activeTab == TAB_ACTIONS);
+        COLORREF actionsCol = actionsActive ? textActive : (g_tabActionsHovered ? textHover : textInactive);
+        SetTextColor(hdc, actionsCol);
+        DrawTextW(hdc, L"\xE722", -1, &g_tabActionsRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        if (actionsActive)
+        {
+            HBRUSH dotB = CreateSolidBrush(actionsCol);
+            HPEN noPen = CreatePen(PS_NULL, 0, 0);
+            SelectObject(hdc, dotB);
+            SelectObject(hdc, noPen);
+            int dotX = g_tabActionsRect.left + btnW / 2;
+            int dotY = g_tabActionsRect.bottom + 1;
+            RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
+            DeleteObject(dotB);
+            DeleteObject(noPen);
+        }
+
+        // Music Tab
+        if (g_settings.showMusicTab)
+        {
+            bool musicActive = (activeTab == TAB_MUSIC);
+            COLORREF musicCol = musicActive ? textActive : (g_tabMusicHovered ? textHover : textInactive);
+            SetTextColor(hdc, musicCol);
+            DrawTextW(hdc, L"\xE8D6", -1, &g_tabMusicRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (musicActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(musicCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = g_tabMusicRect.left + btnW / 2;
+                int dotY = g_tabMusicRect.bottom + 1;
+                RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+        }
+
         // Vertical Divider
-        int divX = startX + btnW + gap + btnW + gap + divW / 2;
+        int divX = startX + (btnW + gap) * tabCount + divW / 2;
         HPEN divPen = CreatePen(PS_SOLID, 1, isDark ? RGB(65, 70, 85) : RGB(185, 195, 210));
         SelectObject(hdc, divPen);
         MoveToEx(hdc, divX, rowY + 3, nullptr);
@@ -1065,6 +1205,74 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
 
     SelectObject(hdc, oldF);
     DeleteObject(iconFont);
+}
+
+int GetQuickControlsDesiredWidth(int dockEdge)
+{
+    bool isVert = (dockEdge == EDGE_LEFT || dockEdge == EDGE_RIGHT);
+    if (isVert)
+        return 260;
+
+    int activeCount = 0;
+    if (g_settings.qcShowWifi) activeCount++;
+    if (g_settings.qcShowBluetooth) activeCount++;
+    if (g_settings.qcShowAirplane) activeCount++;
+    if (g_settings.qcShowHotspot) activeCount++;
+    if (g_settings.qcShowNightLight) activeCount++;
+    if (g_settings.qcShowFocus) activeCount++;
+    if (g_settings.qcShowMute) activeCount++;
+    if (g_settings.qcShowBattery) activeCount++;
+    if (g_settings.qcShowLockPC) activeCount++;
+
+    int slidersW = 0;
+    if (g_settings.qcShowBrightness) slidersW += 60;
+    if (g_settings.qcShowVolume) slidersW += 60;
+
+    int cols = std::max(1, (activeCount + 1) / 2);
+    int tilesW = cols * 100;
+
+    int totalW = 18 + slidersW + (slidersW > 0 ? 14 : 0) + tilesW + 18;
+    if (g_settings.qcShowPowerMode)
+        totalW = std::max(totalW, 440);
+    return std::clamp(totalW, 380, 720);
+}
+
+int GetQuickControlsDesiredHeight(int dockEdge)
+{
+    bool isVert = (dockEdge == EDGE_LEFT || dockEdge == EDGE_RIGHT);
+    int activeCount = 0;
+    if (g_settings.qcShowWifi) activeCount++;
+    if (g_settings.qcShowBluetooth) activeCount++;
+    if (g_settings.qcShowAirplane) activeCount++;
+    if (g_settings.qcShowHotspot) activeCount++;
+    if (g_settings.qcShowNightLight) activeCount++;
+    if (g_settings.qcShowFocus) activeCount++;
+    if (g_settings.qcShowMute) activeCount++;
+    if (g_settings.qcShowBattery) activeCount++;
+    if (g_settings.qcShowLockPC) activeCount++;
+
+    bool hasSliders = (g_settings.qcShowBrightness || g_settings.qcShowVolume);
+
+    if (!isVert)
+    {
+        int h = 34 + 134;
+        if (g_settings.qcShowPowerMode)
+            h += 44;
+        h += 16;
+        return h;
+    }
+    else
+    {
+        int h = 38;
+        if (hasSliders)
+            h += 124;
+        int rows = (activeCount + 1) / 2;
+        h += rows * 70;
+        if (g_settings.qcShowPowerMode)
+            h += 48;
+        h += 16;
+        return std::max(180, h);
+    }
 }
 
 void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEdge)
@@ -1086,37 +1294,104 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         bool hasArrow;
         COLORREF activeBg;
         COLORREF activeBadge;
+        QuickTileId id;
     };
 
-    TileLayout tileData[6] = {};
+    TileLayout tileData[MAX_QUICK_TILES] = {};
+    g_activeTileCount = 0;
+
+    auto addTile = [&](QuickTileId id, const std::wstring &title, const std::wstring &sub, bool active, const wchar_t *glyph, bool arrow, COLORREF bg, COLORREF badge)
+    {
+        if (g_activeTileCount < MAX_QUICK_TILES)
+        {
+            tileData[g_activeTileCount].id = id;
+            tileData[g_activeTileCount].title = title;
+            tileData[g_activeTileCount].subtitle = sub;
+            tileData[g_activeTileCount].active = active;
+            tileData[g_activeTileCount].iconGlyph = glyph;
+            tileData[g_activeTileCount].hasArrow = arrow;
+            tileData[g_activeTileCount].activeBg = bg;
+            tileData[g_activeTileCount].activeBadge = badge;
+            s_activeTileIds[g_activeTileCount] = id;
+            g_activeTileCount++;
+        }
+    };
+
+    if (g_settings.qcShowWifi)
+        addTile(TILE_WIFI, L"Wi-Fi", g_state.wifiOn ? L"On" : L"Off", g_state.wifiOn, L"\xE701", true, RGB(18, 50, 95), RGB(24, 120, 242));
+    if (g_settings.qcShowBluetooth)
+        addTile(TILE_BLUETOOTH, L"Bluetooth", g_state.bluetoothOn ? L"On" : L"Off", g_state.bluetoothOn, L"\xE702", true, RGB(18, 50, 95), RGB(24, 120, 242));
+    if (g_settings.qcShowAirplane)
+        addTile(TILE_AIRPLANE, L"Airplane", g_state.airplaneModeOn ? L"On" : L"Off", g_state.airplaneModeOn, L"\xE709", false, RGB(22, 54, 90), RGB(2, 132, 199));
+    if (g_settings.qcShowHotspot)
+        addTile(TILE_HOTSPOT, L"Hotspot", g_state.hotspotOn ? L"On" : L"Off", g_state.hotspotOn, L"\xE88A", false, RGB(20, 56, 44), RGB(16, 185, 129));
+    if (g_settings.qcShowNightLight)
+        addTile(TILE_NIGHTLIGHT, L"Night light", g_state.nightLightOn ? L"On" : L"Off", g_state.nightLightOn, L"\xE708", false, RGB(65, 45, 18), RGB(245, 158, 11));
+    if (g_settings.qcShowFocus)
+        addTile(TILE_FOCUS, L"Focus", g_state.focusOn ? L"On" : L"Off", g_state.focusOn, L"\xE707", false, RGB(55, 28, 80), RGB(139, 92, 246));
+    if (g_settings.qcShowMute)
+        addTile(TILE_MUTE, L"Mute", g_state.isMuted ? L"Muted" : L"Sound on", g_state.isMuted, g_state.isMuted ? L"\xE74F" : L"\xE767", false, RGB(65, 28, 34), RGB(239, 68, 68));
+    if (g_settings.qcShowBattery)
+        addTile(TILE_BATTERY, std::to_wstring(g_state.batteryPercent) + L"%", g_state.isPluggedIn ? L"Plugged in" : L"On battery", g_state.isPluggedIn, L"\xE83E", false, RGB(22, 45, 34), RGB(34, 197, 94));
+    if (g_settings.qcShowLockPC)
+        addTile(TILE_LOCKPC, L"Lock PC", L"Lock session", false, L"\xE72E", false, RGB(38, 42, 54), RGB(100, 110, 130));
+
+    g_wifiArrowRect = {0, 0, 0, 0};
+    g_btArrowRect = {0, 0, 0, 0};
 
     if (!isVert)
     {
         // ==========================================
-        // 1. HORIZONTAL DOCK LAYOUT (Top edge: 450 x 226)
+        // 1. HORIZONTAL DOCK LAYOUT
         // ==========================================
         sliderW = 54;
         sliderH = 132;
         sliderRadius = 22;
 
-        g_brightnessCapsuleRect = {18, 34, 18 + sliderW, 34 + sliderH};
-        g_volumeCapsuleRect = {78, 34, 78 + sliderW, 34 + sliderH};
+        int curX = 18;
+        if (g_settings.qcShowBrightness)
+        {
+            g_brightnessCapsuleRect = {curX, 34, curX + sliderW, 34 + sliderH};
+            curX += sliderW + 8;
+        }
+        else
+        {
+            g_brightnessCapsuleRect = {0, 0, 0, 0};
+        }
 
-        int tX = 140;
+        if (g_settings.qcShowVolume)
+        {
+            g_volumeCapsuleRect = {curX, 34, curX + sliderW, 34 + sliderH};
+            curX += sliderW + 14;
+        }
+        else
+        {
+            g_volumeCapsuleRect = {0, 0, 0, 0};
+            if (g_settings.qcShowBrightness)
+                curX += 6;
+        }
+
+        int tX = curX;
         int tW = 92;
         int tH = 62;
         int gx = 8;
         int gy = 8;
 
-        g_tileRects[0] = {tX, 34, tX + tW, 34 + tH};                                               // Wi-Fi
-        g_tileRects[1] = {tX + tW + gx, 34, tX + (tW + gx) * 2, 34 + tH};                          // Bluetooth
-        g_tileRects[2] = {tX + (tW + gx) * 2, 34, tX + (tW + gx) * 3, 34 + tH};                    // Night Light
-        g_tileRects[3] = {tX, 34 + tH + gy, tX + tW, 34 + tH * 2 + gy};                            // Focus
-        g_tileRects[4] = {tX + tW + gx, 34 + tH + gy, tX + (tW + gx) * 2, 34 + tH * 2 + gy};       // Mute
-        g_tileRects[5] = {tX + (tW + gx) * 2, 34 + tH + gy, tX + (tW + gx) * 3, 34 + tH * 2 + gy}; // Battery
+        for (int i = 0; i < g_activeTileCount; ++i)
+        {
+            int col = i / 2;
+            int row = i % 2;
+            int itemX = tX + col * (tW + gx);
+            int itemY = 34 + row * (tH + gy);
 
-        g_wifiArrowRect = {g_tileRects[0].right - 24, g_tileRects[0].top, g_tileRects[0].right, g_tileRects[0].bottom};
-        g_btArrowRect = {g_tileRects[1].right - 24, g_tileRects[1].top, g_tileRects[1].right, g_tileRects[1].bottom};
+            tileData[i].rc = {itemX, itemY, itemX + tW, itemY + tH};
+            g_tileRects[i] = tileData[i].rc;
+
+            if (tileData[i].id == TILE_WIFI)
+                g_wifiArrowRect = {tileData[i].rc.right - 24, tileData[i].rc.top, tileData[i].rc.right, tileData[i].rc.bottom};
+            else if (tileData[i].id == TILE_BLUETOOTH)
+                g_btArrowRect = {tileData[i].rc.right - 24, tileData[i].rc.top, tileData[i].rc.right, tileData[i].rc.bottom};
+        }
 
         pmLeft = 18;
         pmRight = width - 18;
@@ -1126,49 +1401,80 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
     else
     {
         // ==========================================
-        // 2. VERTICAL DOCK LAYOUT (Left or Right Edge: 260 x 416)
+        // 2. VERTICAL DOCK LAYOUT
         // ==========================================
-        // Symmetrical 10px gap between controls and vertical tab bar on both edges
         int cStartX = isLeft ? 44 : 12;
-        sliderW = 98;
-        sliderH = 116;
         sliderRadius = 20;
 
-        g_brightnessCapsuleRect = {cStartX, 16, cStartX + sliderW, 16 + sliderH};
-        g_volumeCapsuleRect = {cStartX + sliderW + 8, 16, cStartX + sliderW * 2 + 8, 16 + sliderH};
+        int curY = 38;
+        bool hasBothSliders = (g_settings.qcShowBrightness && g_settings.qcShowVolume);
+
+        if (hasBothSliders)
+        {
+            sliderW = 98;
+            sliderH = 114;
+            g_brightnessCapsuleRect = {cStartX, curY, cStartX + sliderW, curY + sliderH};
+            g_volumeCapsuleRect = {cStartX + sliderW + 8, curY, cStartX + sliderW * 2 + 8, curY + sliderH};
+            curY += sliderH + 10;
+        }
+        else if (g_settings.qcShowBrightness)
+        {
+            sliderW = 204;
+            sliderH = 114;
+            g_brightnessCapsuleRect = {cStartX, curY, cStartX + sliderW, curY + sliderH};
+            g_volumeCapsuleRect = {0, 0, 0, 0};
+            curY += sliderH + 10;
+        }
+        else if (g_settings.qcShowVolume)
+        {
+            sliderW = 204;
+            sliderH = 114;
+            g_volumeCapsuleRect = {cStartX, curY, cStartX + sliderW, curY + sliderH};
+            g_brightnessCapsuleRect = {0, 0, 0, 0};
+            curY += sliderH + 10;
+        }
+        else
+        {
+            g_brightnessCapsuleRect = {0, 0, 0, 0};
+            g_volumeCapsuleRect = {0, 0, 0, 0};
+        }
 
         int tW = 98;
-        int tH = 64;
+        int tH = 62;
         int gx = 8;
         int gy = 8;
-        int tStartY = 142;
 
-        g_tileRects[0] = {cStartX, tStartY, cStartX + tW, tStartY + tH};                                                 // Wi-Fi
-        g_tileRects[1] = {cStartX + tW + gx, tStartY, cStartX + tW * 2 + gx, tStartY + tH};                              // Bluetooth
-        g_tileRects[2] = {cStartX, tStartY + tH + gy, cStartX + tW, tStartY + tH * 2 + gy};                              // Night Light
-        g_tileRects[3] = {cStartX + tW + gx, tStartY + tH + gy, cStartX + tW * 2 + gx, tStartY + tH * 2 + gy};           // Focus
-        g_tileRects[4] = {cStartX, tStartY + (tH + gy) * 2, cStartX + tW, tStartY + tH * 3 + gy * 2};                    // Mute
-        g_tileRects[5] = {cStartX + tW + gx, tStartY + (tH + gy) * 2, cStartX + tW * 2 + gx, tStartY + tH * 3 + gy * 2}; // Battery
+        for (int i = 0; i < g_activeTileCount; ++i)
+        {
+            int col = i % 2;
+            int row = i / 2;
+            int itemX = cStartX + col * (tW + gx);
+            int itemY = curY + row * (tH + gy);
 
-        g_wifiArrowRect = {g_tileRects[0].right - 24, g_tileRects[0].top, g_tileRects[0].right, g_tileRects[0].bottom};
-        g_btArrowRect = {g_tileRects[1].right - 24, g_tileRects[1].top, g_tileRects[1].right, g_tileRects[1].bottom};
+            tileData[i].rc = {itemX, itemY, itemX + tW, itemY + tH};
+            g_tileRects[i] = tileData[i].rc;
+
+            if (tileData[i].id == TILE_WIFI)
+                g_wifiArrowRect = {tileData[i].rc.right - 24, tileData[i].rc.top, tileData[i].rc.right, tileData[i].rc.bottom};
+            else if (tileData[i].id == TILE_BLUETOOTH)
+                g_btArrowRect = {tileData[i].rc.right - 24, tileData[i].rc.top, tileData[i].rc.right, tileData[i].rc.bottom};
+        }
+
+        int tileRows = (g_activeTileCount + 1) / 2;
+        curY += tileRows * (tH + gy);
 
         pmLeft = cStartX;
         pmRight = cStartX + tW * 2 + gx;
-        pmTop = 362;
-        pmBottom = 402;
+        pmTop = curY + 4;
+        pmBottom = pmTop + 38;
     }
 
-    tileData[0] = {g_tileRects[0], L"Wi-Fi", g_state.wifiOn ? L"On" : L"Off", g_state.wifiOn, L"\xE701", true, RGB(18, 50, 95), RGB(24, 120, 242)};
-    tileData[1] = {g_tileRects[1], L"Bluetooth", g_state.bluetoothOn ? L"On" : L"Off", g_state.bluetoothOn, L"\xE702", true, RGB(18, 50, 95), RGB(24, 120, 242)};
-    tileData[2] = {g_tileRects[2], L"Night light", g_state.nightLightOn ? L"On" : L"Off", g_state.nightLightOn, L"\xE708", false, RGB(65, 45, 18), RGB(245, 158, 11)};
-    tileData[3] = {g_tileRects[3], L"Focus", g_state.focusOn ? L"On" : L"Off", g_state.focusOn, L"\xE707", false, RGB(55, 28, 80), RGB(139, 92, 246)};
-    tileData[4] = {g_tileRects[4], L"Mute", g_state.isMuted ? L"Muted" : L"Sound on", false, g_state.isMuted ? L"\xE74F" : L"\xE767", false, RGB(18, 50, 95), RGB(239, 68, 68)};
-    tileData[5] = {g_tileRects[5], std::to_wstring(g_state.batteryPercent) + L"%", g_state.isPluggedIn ? L"Plugged in" : L"On battery", g_state.isPluggedIn, L"\xE83E", false, RGB(22, 45, 34), RGB(34, 197, 94)};
-
-    // A. Render the Two Vertical Capsule Sliders
+    // A. Render the Capsule Sliders
     auto renderCapsuleSlider = [&](const RECT &r, float level, bool isBrightness, bool isMuted)
     {
+        if (r.right <= r.left || r.bottom <= r.top)
+            return;
+
         COLORREF trackBg = isDark ? RGB(32, 35, 45) : RGB(220, 226, 238);
         COLORREF trackBorder = isDark ? RGB(48, 54, 70) : RGB(195, 205, 220);
 
@@ -1234,42 +1540,40 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         DeleteObject(sIconFont);
     };
 
-    renderCapsuleSlider(g_brightnessCapsuleRect, g_state.brightness, true, false);
-    renderCapsuleSlider(g_volumeCapsuleRect, g_state.volume, false, g_state.isMuted);
+    if (g_settings.qcShowBrightness)
+        renderCapsuleSlider(g_brightnessCapsuleRect, g_state.brightness, true, false);
+    if (g_settings.qcShowVolume)
+        renderCapsuleSlider(g_volumeCapsuleRect, g_state.volume, false, g_state.isMuted);
 
-    // B. Render the 6 Control Tiles
+    // B. Render the Dynamic Control Tiles
     HFONT titleFont = CreateClearTypeFont(11, FW_SEMIBOLD, L"Segoe UI");
     HFONT subFont = CreateClearTypeFont(10, FW_NORMAL, L"Segoe UI");
     HFONT tileIconFont = CreateClearTypeFont(13, FW_NORMAL, L"Segoe MDL2 Assets");
 
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < g_activeTileCount; ++i)
     {
         const TileLayout &tl = tileData[i];
         const RECT &tr = tl.rc;
         bool isHovered = (g_hoveredTile == i);
 
         COLORREF tileBg, tileBorder;
-        if (i == 4 && g_state.isMuted)
+        if (tl.id == TILE_MUTE && g_state.isMuted)
         {
-            // Muted: subtle red background
             tileBg = isDark
                          ? (isHovered ? RGB(75, 35, 40) : RGB(55, 30, 35))
                          : (isHovered ? RGB(255, 220, 220) : RGB(255, 235, 235));
-
             tileBorder = isDark ? RGB(120, 55, 60) : RGB(240, 175, 175);
         }
-        else if (tl.active && (i <= 1 || i == 2 || i == 3))
+        else if (tl.active && tl.id != TILE_BATTERY)
         {
             tileBg = isDark ? (isHovered ? RGB(24, 60, 110) : tl.activeBg)
                             : (isHovered ? RGB(210, 230, 255) : RGB(225, 238, 255));
-
             tileBorder = isDark ? RGB(32, 80, 145) : RGB(160, 195, 240);
         }
         else
         {
             tileBg = isDark ? (isHovered ? RGB(36, 40, 52) : RGB(28, 30, 40))
                             : (isHovered ? RGB(216, 222, 234) : RGB(226, 232, 242));
-
             tileBorder = isDark ? RGB(48, 54, 70) : RGB(195, 205, 220);
         }
 
@@ -1284,18 +1588,18 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         DeleteObject(bPen);
 
         // Circular Badge at Top-Left
-        int badgeX = tr.left + 12;
-        int badgeY = tr.top + 10;
+        int badgeX = tr.left + 10;
+        int badgeY = tr.top + 9;
         int badgeD = 22;
 
         COLORREF badgeBg = tl.active ? tl.activeBadge : (isDark ? RGB(44, 48, 62) : RGB(200, 208, 222));
         COLORREF badgeIconCol = tl.active ? RGB(255, 255, 255) : (isDark ? RGB(190, 195, 205) : RGB(60, 70, 88));
-        if (i == 4 && g_state.isMuted)
+        if (tl.id == TILE_MUTE && g_state.isMuted)
         {
             badgeBg = RGB(239, 68, 68);
             badgeIconCol = RGB(255, 255, 255);
         }
-        else if (i == 5)
+        else if (tl.id == TILE_BATTERY)
         {
             badgeBg = isDark ? RGB(30, 46, 38) : RGB(210, 240, 225);
             badgeIconCol = RGB(34, 197, 94);
@@ -1319,8 +1623,8 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         // Arrow '>' for Wi-Fi and Bluetooth
         if (tl.hasArrow)
         {
-            bool isArrowHover = (i == 0 ? g_wifiArrowHovered : g_btArrowHovered);
-            RECT aRc = (i == 0 ? g_wifiArrowRect : g_btArrowRect);
+            bool isArrowHover = (tl.id == TILE_WIFI ? g_wifiArrowHovered : g_btArrowHovered);
+            RECT aRc = (tl.id == TILE_WIFI ? g_wifiArrowRect : g_btArrowRect);
             if (isArrowHover)
             {
                 HBRUSH aHov = CreateSolidBrush(isDark ? RGB(50, 56, 72) : RGB(200, 212, 230));
@@ -1343,8 +1647,8 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         // ClearType Title & Subtitle
         SelectObject(hdc, titleFont);
         SetTextColor(hdc, isDark ? RGB(245, 248, 255) : RGB(18, 22, 32));
-        int textRight = tl.hasArrow ? (tr.right - 26) : (tr.right - 8);
-        RECT tRc = {tr.left + 10, tr.top + 34, textRight, tr.top + 48};
+        int textRight = tl.hasArrow ? (tr.right - 26) : (tr.right - 6);
+        RECT tRc = {tr.left + 10, tr.top + 33, textRight, tr.top + 46};
         DrawTextW(hdc, tl.title.c_str(), -1, &tRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 
         SelectObject(hdc, subFont);
@@ -1352,7 +1656,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
                                 ? (isDark ? RGB(190, 215, 255) : RGB(20, 95, 210))
                                 : (isDark ? RGB(145, 150, 165) : RGB(105, 115, 130));
         SetTextColor(hdc, subColor);
-        RECT sRc = {tr.left + 10, tr.top + 48, textRight, tr.top + 62};
+        RECT sRc = {tr.left + 10, tr.top + 46, textRight, tr.top + 59};
         DrawTextW(hdc, tl.subtitle.c_str(), -1, &sRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
     }
 
@@ -1360,77 +1664,76 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
     DeleteObject(subFont);
     DeleteObject(tileIconFont);
 
-    // C. Render the 3-Segment Power Mode Pill
-    HBRUSH pmBrush = CreateSolidBrush(isDark ? RGB(24, 26, 34) : RGB(220, 226, 236));
-    HPEN pmPen = CreatePen(PS_SOLID, 1, isDark ? RGB(42, 46, 58) : RGB(195, 205, 220));
-    SelectObject(hdc, pmBrush);
-    SelectObject(hdc, pmPen);
-    RoundRect(hdc, pmLeft, pmTop, pmRight, pmBottom, 18, 18);
-    DeleteObject(pmBrush);
-    DeleteObject(pmPen);
-
-    int pmW = pmRight - pmLeft;
-    int segW = pmW / 3;
-
-    g_powerModeRects[0] = {pmLeft, pmTop, pmLeft + segW, pmBottom};
-    g_powerModeRects[1] = {pmLeft + segW, pmTop, pmLeft + segW * 2, pmBottom};
-    g_powerModeRects[2] = {pmLeft + segW * 2, pmTop, pmRight, pmBottom};
-
-    const wchar_t *pmLabels[3] = {L"Battery", L"Balanced", L"Performance"};
-    int activeSeg = static_cast<int>(g_state.powerMode);
-
-    // Active Selection Pill
-    const RECT &actRc = g_powerModeRects[activeSeg];
-    HBRUSH actBrush = CreateSolidBrush(isDark ? RGB(244, 244, 240) : RGB(28, 34, 48));
-    HPEN noPen = CreatePen(PS_NULL, 0, 0);
-    SelectObject(hdc, actBrush);
-    SelectObject(hdc, noPen);
-    RoundRect(hdc, actRc.left + 2, actRc.top + 2, actRc.right - 2, actRc.bottom - 2, 16, 16);
-    DeleteObject(actBrush);
-    DeleteObject(noPen);
-
-    // Segment Labels with ClearType Segoe UI (single line, no wrap)
-    int labelFontSize = isVert ? 10 : 12;
-    HFONT boldSegFont = CreateClearTypeFont(labelFontSize, FW_BOLD, L"Segoe UI");
-    HFONT normSegFont = CreateClearTypeFont(labelFontSize, FW_NORMAL, L"Segoe UI");
-
-    for (int k = 0; k < 3; ++k)
+    // C. Render the 3-Segment Power Mode Pill (if enabled)
+    if (g_settings.qcShowPowerMode)
     {
-        bool isCurrent = (k == activeSeg);
-        bool isHover = (g_hoveredPowerMode == k);
+        HBRUSH pmBrush = CreateSolidBrush(isDark ? RGB(24, 26, 34) : RGB(220, 226, 236));
+        HPEN pmPen = CreatePen(PS_SOLID, 1, isDark ? RGB(42, 46, 58) : RGB(195, 205, 220));
+        SelectObject(hdc, pmBrush);
+        SelectObject(hdc, pmPen);
+        RoundRect(hdc, pmLeft, pmTop, pmRight, pmBottom, 18, 18);
+        DeleteObject(pmBrush);
+        DeleteObject(pmPen);
 
-        SelectObject(hdc, isCurrent ? boldSegFont : normSegFont);
-        COLORREF tc;
-        if (isCurrent)
+        int pmW = pmRight - pmLeft;
+        int segW = pmW / 3;
+
+        g_powerModeRects[0] = {pmLeft, pmTop, pmLeft + segW, pmBottom};
+        g_powerModeRects[1] = {pmLeft + segW, pmTop, pmLeft + segW * 2, pmBottom};
+        g_powerModeRects[2] = {pmLeft + segW * 2, pmTop, pmRight, pmBottom};
+
+        const wchar_t *pmLabels[3] = {L"Battery", L"Balanced", L"Performance"};
+        int activeSeg = static_cast<int>(g_state.powerMode);
+
+        const RECT &actRc = g_powerModeRects[activeSeg];
+        HBRUSH actBrush = CreateSolidBrush(isDark ? RGB(244, 244, 240) : RGB(28, 34, 48));
+        HPEN noPen = CreatePen(PS_NULL, 0, 0);
+        SelectObject(hdc, actBrush);
+        SelectObject(hdc, noPen);
+        RoundRect(hdc, actRc.left + 2, actRc.top + 2, actRc.right - 2, actRc.bottom - 2, 16, 16);
+        DeleteObject(actBrush);
+        DeleteObject(noPen);
+
+        int labelFontSize = isVert ? 10 : 11;
+        HFONT boldSegFont = CreateClearTypeFont(labelFontSize, FW_BOLD, L"Segoe UI");
+        HFONT normSegFont = CreateClearTypeFont(labelFontSize, FW_NORMAL, L"Segoe UI");
+
+        for (int k = 0; k < 3; ++k)
         {
-            tc = isDark ? RGB(18, 20, 24) : RGB(255, 255, 255);
-        }
-        else
-        {
-            tc = isHover
-                     ? (isDark ? RGB(215, 220, 230) : RGB(40, 50, 65))
-                     : (isDark ? RGB(150, 155, 170) : RGB(100, 110, 125));
+            bool isCurrent = (k == activeSeg);
+            bool isHover = (g_hoveredPowerMode == k);
+
+            SelectObject(hdc, isCurrent ? boldSegFont : normSegFont);
+            COLORREF tc;
+            if (isCurrent)
+                tc = isDark ? RGB(18, 20, 24) : RGB(255, 255, 255);
+            else
+                tc = isHover ? (isDark ? RGB(215, 220, 230) : RGB(40, 50, 65))
+                             : (isDark ? RGB(150, 155, 170) : RGB(100, 110, 125));
+
+            SetTextColor(hdc, tc);
+            RECT lblRc = g_powerModeRects[k];
+            DrawTextW(hdc, pmLabels[k], -1, &lblRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
         }
 
-        SetTextColor(hdc, tc);
-        RECT lblRc = g_powerModeRects[k];
-        DrawTextW(hdc, pmLabels[k], -1, &lblRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+        DeleteObject(boldSegFont);
+        DeleteObject(normSegFont);
     }
-
-    DeleteObject(boldSegFont);
-    DeleteObject(normSegFont);
+    else
+    {
+        g_powerModeRects[0] = g_powerModeRects[1] = g_powerModeRects[2] = {0, 0, 0, 0};
+    }
 }
 
 bool HandleQuickControlsClick(HWND hwnd, POINT pt)
 {
     // 1. Brightness Capsule
-    if (PtInRect(&g_brightnessCapsuleRect, pt))
+    if (g_settings.qcShowBrightness && PtInRect(&g_brightnessCapsuleRect, pt))
     {
         g_draggingBrightness = true;
         SetCapture(hwnd);
         float h = static_cast<float>(g_brightnessCapsuleRect.bottom - g_brightnessCapsuleRect.top);
         float lvl = 1.0f - static_cast<float>(pt.y - g_brightnessCapsuleRect.top) / h;
-
         lvl = std::clamp(lvl, 0.0f, 1.0f);
         SetSystemBrightness(lvl);
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -1438,7 +1741,7 @@ bool HandleQuickControlsClick(HWND hwnd, POINT pt)
     }
 
     // 2. Volume Capsule
-    if (PtInRect(&g_volumeCapsuleRect, pt))
+    if (g_settings.qcShowVolume && PtInRect(&g_volumeCapsuleRect, pt))
     {
         if (pt.y >= g_volumeCapsuleRect.bottom - 28)
         {
@@ -1468,51 +1771,57 @@ bool HandleQuickControlsClick(HWND hwnd, POINT pt)
         return true;
     }
 
-    // 4. Main Tile Bodies (direct in-place toggling)
-    if (PtInRect(&g_tileRects[0], pt)) // Wi-Fi body
+    // 4. Main Dynamic Tile Bodies
+    for (int i = 0; i < g_activeTileCount; ++i)
     {
-        ToggleWifi();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return true;
-    }
-    if (PtInRect(&g_tileRects[1], pt)) // Bluetooth body
-    {
-        ToggleBluetooth();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return true;
-    }
-    if (PtInRect(&g_tileRects[2], pt)) // Night light
-    {
-        ToggleNightLight();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return true;
-    }
-    if (PtInRect(&g_tileRects[3], pt)) // Focus
-    {
-        ToggleFocus();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return true;
-    }
-    if (PtInRect(&g_tileRects[4], pt)) // Mute
-    {
-        ToggleSystemMute();
-        InvalidateRect(hwnd, nullptr, FALSE);
-        return true;
-    }
-    if (PtInRect(&g_tileRects[5], pt)) // Battery
-    {
-        ShellExecuteW(nullptr, L"open", L"ms-settings:powersleep", nullptr, nullptr, SW_SHOW);
-        return true;
+        if (PtInRect(&g_tileRects[i], pt))
+        {
+            switch (s_activeTileIds[i])
+            {
+            case TILE_WIFI:
+                ToggleWifi();
+                break;
+            case TILE_BLUETOOTH:
+                ToggleBluetooth();
+                break;
+            case TILE_AIRPLANE:
+                ToggleAirplaneMode();
+                break;
+            case TILE_HOTSPOT:
+                ToggleMobileHotspot();
+                break;
+            case TILE_NIGHTLIGHT:
+                ToggleNightLight();
+                break;
+            case TILE_FOCUS:
+                ToggleFocus();
+                break;
+            case TILE_MUTE:
+                ToggleSystemMute();
+                break;
+            case TILE_BATTERY:
+                ShellExecuteW(nullptr, L"open", L"ms-settings:powersleep", nullptr, nullptr, SW_SHOW);
+                break;
+            case TILE_LOCKPC:
+                LockWorkStation();
+                break;
+            }
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
     }
 
     // 5. Power Mode Segments
-    for (int k = 0; k < 3; ++k)
+    if (g_settings.qcShowPowerMode)
     {
-        if (PtInRect(&g_powerModeRects[k], pt))
+        for (int k = 0; k < 3; ++k)
         {
-            SetPowerMode(static_cast<PowerMode>(k));
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return true;
+            if (PtInRect(&g_powerModeRects[k], pt))
+            {
+                SetPowerMode(static_cast<PowerMode>(k));
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return true;
+            }
         }
     }
 
@@ -1521,19 +1830,17 @@ bool HandleQuickControlsClick(HWND hwnd, POINT pt)
 
 bool HandleQuickControlsMouseMove(HWND hwnd, POINT pt)
 {
-    if (g_draggingBrightness)
+    if (g_draggingBrightness && g_settings.qcShowBrightness)
     {
         float h = static_cast<float>(g_brightnessCapsuleRect.bottom - g_brightnessCapsuleRect.top);
-        float lvl = 1.0f -
-                    static_cast<float>(pt.y - g_brightnessCapsuleRect.top) / h;
-
+        float lvl = 1.0f - static_cast<float>(pt.y - g_brightnessCapsuleRect.top) / h;
         lvl = std::clamp(lvl, 0.0f, 1.0f);
         SetSystemBrightness(lvl);
         InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
 
-    if (g_draggingVolume)
+    if (g_draggingVolume && g_settings.qcShowVolume)
     {
         float h = static_cast<float>(g_volumeCapsuleRect.bottom - g_volumeCapsuleRect.top);
         float lvl = 1.0f - static_cast<float>(pt.y - g_volumeCapsuleRect.top) / h;
@@ -1542,16 +1849,14 @@ bool HandleQuickControlsMouseMove(HWND hwnd, POINT pt)
         return true;
     }
 
-    // Hover states for arrow buttons
     bool newWifiArrowH = PtInRect(&g_wifiArrowRect, pt);
     bool newBtArrowH = PtInRect(&g_btArrowRect, pt);
     bool arrowChanged = (newWifiArrowH != g_wifiArrowHovered || newBtArrowH != g_btArrowHovered);
     g_wifiArrowHovered = newWifiArrowH;
     g_btArrowHovered = newBtArrowH;
 
-    // Hover states for tiles
     int newHoverTile = -1;
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < g_activeTileCount; ++i)
     {
         if (PtInRect(&g_tileRects[i], pt))
         {
@@ -1560,14 +1865,16 @@ bool HandleQuickControlsMouseMove(HWND hwnd, POINT pt)
         }
     }
 
-    // Hover states for power mode
     int newHoverPM = -1;
-    for (int k = 0; k < 3; ++k)
+    if (g_settings.qcShowPowerMode)
     {
-        if (PtInRect(&g_powerModeRects[k], pt))
+        for (int k = 0; k < 3; ++k)
         {
-            newHoverPM = k;
-            break;
+            if (PtInRect(&g_powerModeRects[k], pt))
+            {
+                newHoverPM = k;
+                break;
+            }
         }
     }
 
