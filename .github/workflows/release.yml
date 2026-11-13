@@ -1,41 +1,33 @@
+
 name: Build and Release WinTray
 
 on:
   push:
-    branches:
-      - main       # Triggers on direct pushes and merged PRs to main
     tags:
-      - 'v*'       # Triggers automatically on version tags (e.g., v1.0.1)
-  pull_request:
-    branches:
-      - main       # Triggers when a PR is opened or updated
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-and-release:
+    name: Build Windows Release
     runs-on: windows-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Configure CMake
-      run: cmake -B build -A x64
+      - name: Configure CMake
+        run: cmake -B build -A x64
 
-    - name: Build Release Binary
-      run: cmake --build build --config Release
+      - name: Build Release Binary
+        run: cmake --build build --config Release
 
-    # 1. Uploads the .exe as a standard workflow artifact for ALL pushes/merges
-    - name: Upload Build Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: WinTray-Executable
-        path: build/Release/WinTray.exe
-
-    # 2. Creates a formal GitHub Release ONLY when a 'v*' tag is pushed
-    - name: Upload Release Asset
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: softprops/action-gh-release@v2
-      with:
-        files: build/Release/WinTray.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Release/WinTray.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
