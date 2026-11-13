@@ -3,11 +3,11 @@
 #include <vector>
 #include <string>
 
-constexpr float COLLAPSED_W = 220.0f;
-constexpr float COLLAPSED_H = 16.0f;
-constexpr float COLLAPSED_LENGTH = 220.0f;
-constexpr float COLLAPSED_THICKNESS = 16.0f;
-constexpr int CORNER_RADIUS = 28;
+constexpr float COLLAPSED_W = 210.0f;
+constexpr float COLLAPSED_H = 26.0f;
+constexpr float COLLAPSED_LENGTH = 210.0f;
+constexpr float COLLAPSED_THICKNESS = 26.0f;
+constexpr int CORNER_RADIUS = 24;
 constexpr UINT_PTR ANIM_TIMER_ID = 42;
 constexpr int HOTKEY_TOGGLE_ID = 9001;
 constexpr UINT WM_DOWNLOAD_COMPLETE = WM_USER + 105;
@@ -17,6 +17,18 @@ enum DockEdge
     EDGE_TOP = 0,
     EDGE_RIGHT = 1,
     EDGE_LEFT = 2
+};
+
+enum NotchStyle
+{
+    NOTCH_ATTACHED = 0, // Flush against screen bezel (MacBook style)
+    NOTCH_FLOATING = 1  // Detached floating pill (Dynamic Island style)
+};
+
+enum ActiveTab
+{
+    TAB_FILES = 0,
+    TAB_CONTROLS = 1
 };
 
 struct AppSettings
@@ -30,7 +42,8 @@ struct AppSettings
     int dockEdge = EDGE_TOP;
     float dockOffsetRatio = 0.5f;
     int themeMode = 0; // 0 = System, 1 = Light, 2 = Dark
-    int backdropStyle = 0; // 0 = Glass (Acrylic), 1 = Tinted (solid translucent)
+    int backdropStyle = 0; // 0 = Liquid Glass (Acrylic), 1 = Tinted (Candy)
+    int notchStyle = NOTCH_ATTACHED; // 0 = Attached Notch, 1 = Floating Island
 };
 
 struct ThemePalette {
@@ -66,6 +79,7 @@ extern bool g_isExpanded;
 extern bool g_isSelfDragging;
 extern float g_SpinnerAngle;
 extern ThemePalette g_theme;
+extern ActiveTab g_activeTab;
 
 void CalculateTargetSize(bool expanded);
 void PruneMissingItems(HWND hwnd);

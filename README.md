@@ -120,9 +120,10 @@ Get-Item .\build\Release\WinTray.exe | Select-Object LastWriteTime, Length
 Commit the version bump and push your updates to your remote repository:
 
 ```bash
-git add src/main.cpp
+git add .
 git commit -m "Bump version to v1.0.1"
-git push origin main
+git tag v1.1.1
+git push origin main --tags
 
 ```
 
