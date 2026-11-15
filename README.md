@@ -125,6 +125,18 @@ git commit -m "Bump version to v1.0.1"
 git tag v1.1.1
 git push origin main --tags
 
+
+
+```
+new method
+
+```bash 
+git checkout main
+git pull origin main
+
+git tag v1.0.0
+git push origin v1.0.0
+
 ```
 
 ---

@@ -56,11 +56,24 @@ set(SOURCES
     src/appbar.cpp
     src/blur.h
     src/blur.cpp
+    src/network.h
+    src/network.cpp
+    src/share_ui.h
+    src/share_ui.cpp
+    include/qrcodegen.hpp
+    include/qrcodegen.cpp
+    include/httplib.h
+    include/nlohmann/json.hpp
     "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/app.manifest"
 )
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES})
+
+target_include_directories(${PROJECT_NAME} PRIVATE
+    src
+    include
+)
 
 set_property(TARGET ${PROJECT_NAME} PROPERTY
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
@@ -82,6 +95,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     windowsapp
     d2d1
     dwrite
+    Ws2_32
+    Iphlpapi
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE

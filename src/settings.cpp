@@ -76,6 +76,8 @@ static RECT s_actOpenCapturesBtnRect = {};
 static RECT s_actOpenShotsBtnRect = {};
 
 // General Tab hit rects
+static RECT s_usernameBtnRect = {};
+static bool s_isEditingUsername = false;
 static RECT s_autostartToggleRect = {};
 static RECT s_alwaysOnTopToggleRect = {};
 static RECT s_autoremoveToggleRect = {};
@@ -154,12 +156,23 @@ void LoadSettings()
     g_settings.playerShowCollapsedArt = GetPrivateProfileIntW(L"Player", L"ShowCollapsedArt", 1, g_iniPath.c_str()) == 1;
     g_settings.playerShowVisualizer = GetPrivateProfileIntW(L"Player", L"ShowVisualizer", 1, g_iniPath.c_str()) == 1;
     g_settings.playerVisualizerColor = GetPrivateProfileIntW(L"Player", L"VisualizerColor", 0, g_iniPath.c_str());
+
+    // General / Network preferences
+    wchar_t defCompName[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+    DWORD cLen = MAX_COMPUTERNAME_LENGTH + 1;
+    GetComputerNameW(defCompName, &cLen);
+
+    wchar_t uBuf[128] = {0};
+    GetPrivateProfileStringW(L"General", L"Username", defCompName, uBuf, 128, g_iniPath.c_str());
+    g_settings.username = uBuf;
+    if (g_settings.username.empty()) g_settings.username = defCompName;
 }
 
 void SaveSettings()
 {
     if (g_iniPath.empty())
         return;
+    WritePrivateProfileStringW(L"General", L"Username", g_settings.username.c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"ThemeMode", std::to_wstring(g_settings.themeMode).c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"BackdropStyle", std::to_wstring(g_settings.backdropStyle).c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"NotchStyle", std::to_wstring(g_settings.notchStyle).c_str(), g_iniPath.c_str());
@@ -846,32 +859,60 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
     }
     else if (s_activeTab == STAB_GENERAL)
     {
-        // Setting 1: Start with Windows
-        int y1 = 44;
+        // Setting 1: Device Name / Username (for AirDrop / Local Share)
+        int y0 = 36;
+        drawRowHeader(y0, L"Device Name", L"Identifies your PC to nearby devices during AirDrop transfers. Click to rename.");
+        s_usernameBtnRect = {rightEdge - 170, y0 + 8, rightEdge, y0 + 40};
+
+        COLORREF unBg, unBorder, unText;
+        if (s_isEditingUsername)
+        {
+            unBg = isDark ? RGB(20, 50, 95) : RGB(215, 235, 255);
+            unBorder = RGB(24, 120, 242);
+            unText = isDark ? RGB(100, 180, 255) : RGB(10, 100, 220);
+        }
+        else
+        {
+            unBg = isDark ? RGB(32, 36, 48) : RGB(225, 232, 244);
+            unBorder = isDark ? RGB(55, 62, 78) : RGB(190, 202, 220);
+            unText = isDark ? RGB(245, 248, 255) : RGB(20, 26, 38);
+        }
+
+        DrawRoundedRect(memDC, s_usernameBtnRect, 8, unBg, unBorder, s_isEditingUsername ? 2 : 1);
+        HFONT unFont = CreateClearTypeFont(12, FW_BOLD, L"Segoe UI");
+        oldF = SelectObject(memDC, unFont);
+        SetTextColor(memDC, unText);
+        std::wstring uDisplay = g_settings.username + (s_isEditingUsername && s_caretVisible ? L"|" : L"");
+        DrawTextW(memDC, uDisplay.c_str(), -1, &s_usernameBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        SelectObject(memDC, oldF);
+        DeleteObject(unFont);
+
+        // Setting 2: Start with Windows
+        int y1 = 106;
         drawRowHeader(y1, L"Start with Windows", L"Automatically run WinTray on system startup.");
         s_autostartToggleRect = {rightEdge - 48, y1 + 12, rightEdge - 4, y1 + 36};
         DrawToggleSwitch(memDC, s_autostartToggleRect, IsAutoStartEnabled(), isDark);
 
-        // Setting 2: Always on Top
-        int y2 = 120;
+        // Setting 3: Always on Top
+        int y2 = 176;
         drawRowHeader(y2, L"Always on Top", L"Keep WinTray visible above full-screen and maximized windows.");
         s_alwaysOnTopToggleRect = {rightEdge - 48, y2 + 12, rightEdge - 4, y2 + 36};
         DrawToggleSwitch(memDC, s_alwaysOnTopToggleRect, g_settings.alwaysOnTop, isDark);
 
-        // Setting 3: Auto Remove Unpinned
-        int y3 = 196;
+        // Setting 4: Auto Remove Unpinned
+        int y3 = 246;
         drawRowHeader(y3, L"Auto-remove Unpinned", L"Clear unpinned items when dragged out of the dock.");
         s_autoremoveToggleRect = {rightEdge - 48, y3 + 12, rightEdge - 4, y3 + 36};
         DrawToggleSwitch(memDC, s_autoremoveToggleRect, g_settings.autoRemoveUnpinned, isDark);
 
-        // Setting 4: Move Files
-        int y4 = 272;
+        // Setting 5: Move Files
+        int y4 = 316;
         drawRowHeader(y4, L"Move Files on Drop", L"Move original files into tray instead of copying.");
         s_movefilesToggleRect = {rightEdge - 48, y4 + 12, rightEdge - 4, y4 + 36};
         DrawToggleSwitch(memDC, s_movefilesToggleRect, g_settings.moveFiles, isDark);
 
-        // Setting 5: Editable Global Hotkey
-        int y5 = 348;
+        // Setting 6: Editable Global Hotkey
+        int y5 = 386;
         drawRowHeader(y5, L"Global Toggle Hotkey", L"Keyboard shortcut to toggle WinTray. Click to rebind.");
         s_hotkeyBtnRect = {rightEdge - 170, y5 + 8, rightEdge, y5 + 40};
 
@@ -1040,12 +1081,12 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
         // Section 3: Power Mode Selector
         int py = gridY + rowH * 5 + 8;
         drawRowHeader(py, L"Power Plan Pill", L"Show Battery / Balanced / Performance selector.");
-        s_qcPowerModeToggleRect = {startX + 280, py + 12, startX + 324, py + 36};
+        s_qcPowerModeToggleRect = {rightEdge - 48, py + 12, rightEdge - 4, py + 36};
         DrawToggleSwitch(memDC, s_qcPowerModeToggleRect, g_settings.qcShowPowerMode, isDark);
 
-        RECT pPillRc = {rightEdge - 240, py + 8, rightEdge, py + 40};
-        std::vector<std::wstring> pOpts = {L"Battery", L"Balanced", L"Performance"};
-        DrawSegmentedPills(memDC, pPillRc, pOpts, 2, s_powerPillRects, isDark);
+        // RECT pPillRc = {rightEdge - 240, py + 8, rightEdge, py + 40};
+        // std::vector<std::wstring> pOpts = {L"Battery", L"Balanced", L"Performance"};
+        // DrawSegmentedPills(memDC, pPillRc, pOpts, 2, s_powerPillRects, isDark);
     }
     else if (s_activeTab == STAB_ABOUT)
     {
@@ -1204,6 +1245,35 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     case WM_CHAR:
     {
+        if (s_isEditingUsername)
+        {
+            if (wParam == VK_BACK)
+            {
+                if (!g_settings.username.empty())
+                {
+                    g_settings.username.pop_back();
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            else if (wParam == VK_RETURN || wParam == VK_ESCAPE)
+            {
+                s_isEditingUsername = false;
+                SaveSettings();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            else if (wParam >= 32 && wParam != 127)
+            {
+                if (g_settings.username.size() < 24)
+                {
+                    g_settings.username.push_back(static_cast<wchar_t>(wParam));
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+        }
+
         if (s_searchFocused)
         {
             if (wParam == VK_BACK)
@@ -1545,6 +1615,23 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         else if (s_activeTab == STAB_GENERAL)
         {
+            if (PtInRect(&s_usernameBtnRect, pt))
+            {
+                s_isEditingUsername = !s_isEditingUsername;
+                s_isRecordingHotkey = false;
+                if (!s_isEditingUsername)
+                    SaveSettings();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+
+            if (s_isEditingUsername)
+            {
+                s_isEditingUsername = false;
+                SaveSettings();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+
             if (PtInRect(&s_autostartToggleRect, pt))
             {
                 SetAutoStart(!IsAutoStartEnabled());

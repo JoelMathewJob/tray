@@ -523,6 +523,159 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
 {
     SetBkMode(hdc, TRANSPARENT);
 
+    // 0. TOP PRIORITY: AirDrop File Transfer Active HUD (Sending or Receiving)
+    if (g_transfer.isTransferring)
+    {
+        ULONGLONG now = GetTickCount64();
+        float t = static_cast<float>(now % 3000) / 3000.0f; // 0.0 to 1.0 cycle
+
+        if (!isVert)
+        {
+            // ==========================================
+            // HORIZONTAL LIQUID GRADIENT TRANSFER HUD
+            // ==========================================
+            HFONT iconFont = CreateClearTypeFont(12, FW_NORMAL, L"Segoe MDL2 Assets");
+            HFONT textFont = CreateClearTypeFont(10, FW_BOLD, L"Segoe UI");
+            HGDIOBJ oldF = SelectObject(hdc, iconFont);
+
+            // Left: Glowing Transfer Icon
+            bool isSend = g_transfer.isSending;
+            COLORREF accentCol = isSend ? RGB(0, 160, 255) : RGB(52, 211, 153);
+            SetTextColor(hdc, accentCol);
+            RECT iconRc = {12, 0, 30, height - 4};
+            DrawTextW(hdc, isSend ? L"\xE724" : L"\xE896", -1, &iconRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            // Text: "Sending: [filename]" / "Receiving: [filename]"
+            SelectObject(hdc, textFont);
+            SetTextColor(hdc, isDark ? RGB(245, 248, 255) : RGB(20, 24, 32));
+            std::wstring transText = (isSend ? L"Sending: " : L"Receiving: ") + g_transfer.currentFileName;
+            RECT textRc = {34, 0, width - 42, height - 4};
+            DrawTextW(hdc, transText.c_str(), -1, &textRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+
+            // Right: Animated dots
+            RECT dotRc = {width - 40, 0, width - 10, height - 4};
+            int dotCount = (static_cast<int>(now / 350) % 3) + 1;
+            std::wstring dots(dotCount, L'.');
+            SetTextColor(hdc, accentCol);
+            DrawTextW(hdc, dots.c_str(), -1, &dotRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+            // Bottom Liquid Gradient Progress Bar
+            int barY = height - 5;
+            int barH = 3;
+            int barStartX = 14;
+            int barEndX = width - 14;
+            int barTotalW = barEndX - barStartX;
+
+            // Background track
+            COLORREF trackCol = isDark ? RGB(35, 42, 58) : RGB(210, 220, 235);
+            HBRUSH trackBr = CreateSolidBrush(trackCol);
+            HPEN noP = CreatePen(PS_NULL, 0, 0);
+            HGDIOBJ oldB = SelectObject(hdc, trackBr);
+            HGDIOBJ oldP = SelectObject(hdc, noP);
+            RoundRect(hdc, barStartX, barY, barEndX, barY + barH, barH, barH);
+            DeleteObject(trackBr);
+
+            // Flowing Liquid Gradient Bar
+            int numSteps = 32;
+            float stepW = static_cast<float>(barTotalW) / static_cast<float>(numSteps);
+
+            for (int i = 0; i < numSteps; ++i) {
+                float posRatio = static_cast<float>(i) / static_cast<float>(numSteps);
+                float wavePhase = fmod(posRatio + t * 2.0f, 1.0f);
+
+                // Multi-stop liquid palette: Cyan -> Electric Blue -> Purple -> Emerald
+                int r = 0, g = 0, b = 0;
+                if (wavePhase < 0.33f) {
+                    float f = wavePhase / 0.33f;
+                    r = static_cast<int>(0 * (1 - f) + 0 * f);
+                    g = static_cast<int>(245 * (1 - f) + 120 * f);
+                    b = static_cast<int>(212 * (1 - f) + 255 * f);
+                } else if (wavePhase < 0.66f) {
+                    float f = (wavePhase - 0.33f) / 0.33f;
+                    r = static_cast<int>(0 * (1 - f) + 168 * f);
+                    g = static_cast<int>(120 * (1 - f) + 85 * f);
+                    b = static_cast<int>(255 * (1 - f) + 247 * f);
+                } else {
+                    float f = (wavePhase - 0.66f) / 0.34f;
+                    r = static_cast<int>(168 * (1 - f) + 52 * f);
+                    g = static_cast<int>(85 * (1 - f) + 211 * f);
+                    b = static_cast<int>(247 * (1 - f) + 153 * f);
+                }
+
+                HBRUSH segBr = CreateSolidBrush(RGB(r, g, b));
+                SelectObject(hdc, segBr);
+                int sx1 = barStartX + static_cast<int>(i * stepW);
+                int sx2 = barStartX + static_cast<int>((i + 1) * stepW);
+                if (i == numSteps - 1) sx2 = barEndX;
+                RoundRect(hdc, sx1, barY, sx2 + 1, barY + barH, barH, barH);
+                DeleteObject(segBr);
+            }
+
+            // Traveling liquid crest highlight
+            int crestX = barStartX + static_cast<int>(fmod(t * 1.5f, 1.0f) * barTotalW);
+            HBRUSH whiteBr = CreateSolidBrush(RGB(255, 255, 255));
+            SelectObject(hdc, whiteBr);
+            RoundRect(hdc, crestX - 6, barY - 1, crestX + 6, barY + barH + 1, barH + 2, barH + 2);
+            DeleteObject(whiteBr);
+
+            SelectObject(hdc, oldB);
+            SelectObject(hdc, oldP);
+            DeleteObject(noP);
+            SelectObject(hdc, oldF);
+            DeleteObject(iconFont);
+            DeleteObject(textFont);
+        }
+        else
+        {
+            // ==========================================
+            // VERTICAL LIQUID GRADIENT TRANSFER HUD
+            // ==========================================
+            HFONT iconFont = CreateClearTypeFont(11, FW_NORMAL, L"Segoe MDL2 Assets");
+            HGDIOBJ oldF = SelectObject(hdc, iconFont);
+
+            bool isSend = g_transfer.isSending;
+            COLORREF accentCol = isSend ? RGB(0, 160, 255) : RGB(52, 211, 153);
+            SetTextColor(hdc, accentCol);
+            RECT iconRc = {0, 12, width, 30};
+            DrawTextW(hdc, isSend ? L"\xE724" : L"\xE896", -1, &iconRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            // Vertical liquid bar down center
+            int barX = (width - 4) / 2;
+            int barY1 = 36;
+            int barY2 = height - 16;
+            int barTotalH = barY2 - barY1;
+
+            COLORREF trackCol = isDark ? RGB(35, 42, 58) : RGB(210, 220, 235);
+            HBRUSH trackBr = CreateSolidBrush(trackCol);
+            HPEN noP = CreatePen(PS_NULL, 0, 0);
+            HGDIOBJ oldB = SelectObject(hdc, trackBr);
+            HGDIOBJ oldP = SelectObject(hdc, noP);
+            RoundRect(hdc, barX, barY1, barX + 4, barY2, 4, 4);
+            DeleteObject(trackBr);
+
+            int numSteps = 24;
+            float stepH = static_cast<float>(barTotalH) / static_cast<float>(numSteps);
+            for (int i = 0; i < numSteps; ++i) {
+                float posRatio = static_cast<float>(i) / static_cast<float>(numSteps);
+                float wavePhase = fmod(posRatio + t * 2.0f, 1.0f);
+                int r = 0, g = static_cast<int>(180 + wavePhase * 75), b = static_cast<int>(220 + wavePhase * 35);
+                HBRUSH segBr = CreateSolidBrush(RGB(r, g > 255 ? 255 : g, b > 255 ? 255 : b));
+                SelectObject(hdc, segBr);
+                int sy1 = barY1 + static_cast<int>(i * stepH);
+                int sy2 = barY1 + static_cast<int>((i + 1) * stepH);
+                RoundRect(hdc, barX, sy1, barX + 4, sy2 + 1, 4, 4);
+                DeleteObject(segBr);
+            }
+
+            SelectObject(hdc, oldB);
+            SelectObject(hdc, oldP);
+            DeleteObject(noP);
+            SelectObject(hdc, oldF);
+            DeleteObject(iconFont);
+        }
+        return;
+    }
+
     // 1. TOP PRIORITY: Screen Recording Active HUD
     if (g_recording.isRecording)
     {

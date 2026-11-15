@@ -33,6 +33,7 @@ RECT g_tabFilesRect = {};
 RECT g_tabControlsRect = {};
 RECT g_tabActionsRect = {};
 RECT g_tabMusicRect = {};
+RECT g_tabShareRect = {};
 RECT g_settingsBtnRect = {};
 RECT g_brightnessCapsuleRect = {};
 RECT g_volumeCapsuleRect = {};
@@ -61,6 +62,7 @@ bool g_tabFilesHovered = false;
 bool g_tabControlsHovered = false;
 bool g_tabActionsHovered = false;
 bool g_tabMusicHovered = false;
+bool g_tabShareHovered = false;
 bool g_settingsHovered = false;
 bool g_wifiArrowHovered = false;
 bool g_btArrowHovered = false;
@@ -979,14 +981,20 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int startY = 24;
         int gap = 8;
 
-        int tabCount = g_settings.showMusicTab ? 4 : 3;
+        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 1;
         g_tabFilesRect = {barX, startY, barX + btnW, startY + btnH};
         g_tabControlsRect = {barX, startY + btnH + gap, barX + btnW, startY + (btnH + gap) * 2};
         g_tabActionsRect = {barX, startY + (btnH + gap) * 2, barX + btnW, startY + (btnH + gap) * 3};
+        int vSlot = 3;
         if (g_settings.showMusicTab)
-            g_tabMusicRect = {barX, startY + (btnH + gap) * 3, barX + btnW, startY + (btnH + gap) * 4};
+        {
+            g_tabMusicRect = {barX, startY + (btnH + gap) * vSlot, barX + btnW, startY + (btnH + gap) * (vSlot + 1)};
+            vSlot++;
+        }
         else
             g_tabMusicRect = {0, 0, 0, 0};
+
+        g_tabShareRect = {barX, startY + (btnH + gap) * vSlot, barX + btnW, startY + (btnH + gap) * (vSlot + 1)};
 
         int divY = startY + (btnH + gap) * tabCount + 6;
         int gearY = divY + 8;
@@ -1072,6 +1080,27 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             }
         }
 
+        // Share Tab
+        {
+            bool shareActive = (activeTab == TAB_SHARE);
+            COLORREF shareCol = shareActive ? textActive : (g_tabShareHovered ? textHover : textInactive);
+            SetTextColor(hdc, shareCol);
+            DrawTextW(hdc, L"\xE701", -1, &g_tabShareRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (shareActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(shareCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = isLeft ? (g_tabShareRect.right + 2) : (g_tabShareRect.left - 5);
+                int dotY = g_tabShareRect.top + btnH / 2 - 2;
+                RoundRect(hdc, dotX, dotY, dotX + 3, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+        }
+
         // Horizontal Divider in vertical bar
         HPEN divPen = CreatePen(PS_SOLID, 1, isDark ? RGB(65, 70, 85) : RGB(185, 195, 210));
         SelectObject(hdc, divPen);
@@ -1095,17 +1124,23 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int gap = 6;
         int divW = 12;
 
-        int tabCount = g_settings.showMusicTab ? 4 : 3;
+        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 1;
         int totalBarW = (btnW + gap) * tabCount + divW + gap + btnW;
         int startX = (width - totalBarW) / 2;
 
         g_tabFilesRect = {startX, rowY, startX + btnW, rowY + btnH};
         g_tabControlsRect = {startX + btnW + gap, rowY, startX + btnW + gap + btnW, rowY + btnH};
         g_tabActionsRect = {startX + (btnW + gap) * 2, rowY, startX + (btnW + gap) * 2 + btnW, rowY + btnH};
+        int hSlot = 3;
         if (g_settings.showMusicTab)
-            g_tabMusicRect = {startX + (btnW + gap) * 3, rowY, startX + (btnW + gap) * 3 + btnW, rowY + btnH};
+        {
+            g_tabMusicRect = {startX + (btnW + gap) * hSlot, rowY, startX + (btnW + gap) * hSlot + btnW, rowY + btnH};
+            hSlot++;
+        }
         else
             g_tabMusicRect = {0, 0, 0, 0};
+
+        g_tabShareRect = {startX + (btnW + gap) * hSlot, rowY, startX + (btnW + gap) * hSlot + btnW, rowY + btnH};
 
         // Files Tab
         bool filesActive = (activeTab == TAB_FILES);
@@ -1180,6 +1215,27 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
                 SelectObject(hdc, noPen);
                 int dotX = g_tabMusicRect.left + btnW / 2;
                 int dotY = g_tabMusicRect.bottom + 1;
+                RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+        }
+
+        // Share Tab
+        {
+            bool shareActive = (activeTab == TAB_SHARE);
+            COLORREF shareCol = shareActive ? textActive : (g_tabShareHovered ? textHover : textInactive);
+            SetTextColor(hdc, shareCol);
+            DrawTextW(hdc, L"\xE701", -1, &g_tabShareRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (shareActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(shareCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = g_tabShareRect.left + btnW / 2;
+                int dotY = g_tabShareRect.bottom + 1;
                 RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
                 DeleteObject(dotB);
                 DeleteObject(noPen);

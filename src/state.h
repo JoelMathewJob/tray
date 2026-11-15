@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <vector>
 #include <string>
+#include <mutex>
 
 constexpr float COLLAPSED_W = 210.0f;
 constexpr float COLLAPSED_H = 26.0f;
@@ -30,7 +31,8 @@ enum ActiveTab
     TAB_FILES = 0,
     TAB_CONTROLS = 1,
     TAB_ACTIONS = 2,
-    TAB_MUSIC = 3
+    TAB_MUSIC = 3,
+    TAB_SHARE = 4
 };
 
 enum CollapsedStyle
@@ -81,6 +83,9 @@ struct AppSettings
     bool playerShowCollapsedArt = true;
     bool playerShowVisualizer = true;
     int playerVisualizerColor = 0; // 0=Coral, 1=Cyan, 2=Emerald, 3=Amber
+
+    // Network / AirDrop preferences
+    std::wstring username = L"";
 };
 
 struct ThemePalette {
@@ -109,6 +114,23 @@ struct DownloadResult
     std::wstring displayName;
 };
 
+struct DiscoveredPeer
+{
+    std::string ip;
+    std::wstring name;
+    std::string deviceType; // "pc", "mobile", etc.
+    ULONGLONG lastSeenTick = 0;
+};
+
+struct FileTransferState {
+    std::atomic<bool> isTransferring{false};
+    std::atomic<bool> isSending{false};
+    std::atomic<float> progress{0.0f};
+    std::wstring currentFileName;
+    std::wstring peerName;
+    ULONGLONG startTime = 0;
+};
+
 extern HWND g_mainHwnd;
 extern AppSettings g_settings;
 extern std::vector<PinnedItem> g_items;
@@ -117,6 +139,10 @@ extern bool g_isSelfDragging;
 extern float g_SpinnerAngle;
 extern ThemePalette g_theme;
 extern ActiveTab g_activeTab;
+
+extern std::vector<DiscoveredPeer> g_peers;
+extern std::mutex g_peersMutex;
+extern FileTransferState g_transfer;
 
 void CalculateTargetSize(bool expanded);
 void PruneMissingItems(HWND hwnd);
@@ -128,6 +154,7 @@ void UpdateTrayWindowGeometry(HWND hwnd);
 void SyncTrayOrientation(HWND hwnd);
 void UpdateThemeColors();
 bool IsResolvedDarkMode();
+void OpenShareDialog(HWND parentHwnd, const std::wstring &initialFilePath = L"");
 
 // Temp folder lifecycle helpers
 std::wstring GetWinTrayTempDir();

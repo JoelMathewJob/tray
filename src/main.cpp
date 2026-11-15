@@ -6,6 +6,8 @@
 #include "controls.h"
 #include "actions.h"
 #include "player.h"
+#include "share_ui.h"
+#include "network.h"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -29,6 +31,7 @@ bool g_isExpanded = false;
 bool g_isSelfDragging = false;
 float g_SpinnerAngle = 0.0f;
 ActiveTab g_activeTab = TAB_FILES;
+FileTransferState g_transfer;
 
 static int g_nextItemId = 1;
 static int g_hoveredIndex = -1;
@@ -248,6 +251,12 @@ void CalculateTargetSize(bool expanded)
         {
             g_targetW = static_cast<float>(GetMusicPlayerDesiredWidth(g_settings.dockEdge));
             g_targetH = static_cast<float>(GetMusicPlayerDesiredHeight(g_settings.dockEdge));
+            return;
+        }
+        if (g_activeTab == TAB_SHARE)
+        {
+            g_targetW = static_cast<float>(GetShareTabDesiredWidth(g_settings.dockEdge));
+            g_targetH = static_cast<float>(GetShareTabDesiredHeight(g_settings.dockEdge));
             return;
         }
 
@@ -493,6 +502,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         InitQuickControls();
         InitActionsEngine();
         InitPlayerEngine();
+        NetworkManager::Instance().Start();
         UpdateThemeColors();
         CleanupOldTempFiles(3);
         ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
@@ -500,7 +510,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         CalculateTargetSize(false);
         UpdateTrayWindowGeometry(hwnd);
         SetWindowDisplayAffinity(hwnd, 0x00000011 /* WDA_EXCLUDEFROMCAPTURE */);
-        SetTimer(hwnd, 889, 100, nullptr); // Status timer for collapsed HUD, recording timer, visualizer & live music scrubber
+        SetTimer(hwnd, 889, 33, nullptr); // Status timer for collapsed HUD, recording timer, visualizer, live music scrubber & share radar
         return 0;
     }
 
@@ -554,8 +564,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == 889)
         {
             if (g_recording.isRecording || 
+                g_transfer.isTransferring ||
                 (!g_isExpanded && g_settings.collapsedStyle != COLLAPSED_DEFAULT) ||
-                (g_isExpanded && g_activeTab == TAB_MUSIC && (g_media.isPlaying || g_media.hasActiveSession)))
+                (g_isExpanded && g_activeTab == TAB_MUSIC && (g_media.isPlaying || g_media.hasActiveSession)) ||
+                (g_isExpanded && g_activeTab == TAB_SHARE))
             {
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
@@ -704,12 +716,16 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         bool newControlsHover = PtInRect(&g_tabControlsRect, pt);
         bool newActionsHover = PtInRect(&g_tabActionsRect, pt);
         bool newMusicHover = PtInRect(&g_tabMusicRect, pt);
-        if (newFilesHover != g_tabFilesHovered || newControlsHover != g_tabControlsHovered || newActionsHover != g_tabActionsHovered || newMusicHover != g_tabMusicHovered)
+        bool newShareHover = PtInRect(&g_tabShareRect, pt);
+        if (newFilesHover != g_tabFilesHovered || newControlsHover != g_tabControlsHovered ||
+            newActionsHover != g_tabActionsHovered || newMusicHover != g_tabMusicHovered ||
+            newShareHover != g_tabShareHovered)
         {
             g_tabFilesHovered = newFilesHover;
             g_tabControlsHovered = newControlsHover;
             g_tabActionsHovered = newActionsHover;
             g_tabMusicHovered = newMusicHover;
+            g_tabShareHovered = newShareHover;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
 
@@ -726,6 +742,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else if (g_isExpanded && g_activeTab == TAB_MUSIC)
         {
             if (HandleMusicPlayerMouseMove(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_SHARE)
+        {
+            if (HandleShareTabMouseMove(hwnd, pt))
                 return 0;
         }
 
@@ -778,6 +799,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_tabControlsHovered = false;
         g_tabActionsHovered = false;
         g_tabMusicHovered = false;
+        g_tabShareHovered = false;
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
         g_isDraggingWindow = false;
@@ -852,6 +874,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (PtInRect(&g_tabShareRect, pt))
+        {
+            if (g_activeTab != TAB_SHARE)
+            {
+                g_activeTab = TAB_SHARE;
+                CalculateTargetSize(true);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
         if (PtInRect(&g_settingsBtnRect, pt))
         {
             OpenSettingsDialog(hwnd);
@@ -873,6 +907,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else if (g_isExpanded && g_activeTab == TAB_MUSIC)
         {
             if (HandleMusicPlayerClick(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_SHARE)
+        {
+            if (HandleShareTabClick(hwnd, pt))
                 return 0;
         }
 
@@ -1009,6 +1048,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             std::wstring pinLabel = (selectedCount > 1) ? L"Toggle Pin for Selected" : (g_items[clickedIdx].isPinned ? L"Unpin from Tray" : L"Pin to Tray");
             AppendMenuW(hMenu, MF_STRING, 1003, pinLabel.c_str());
+            AppendMenuW(hMenu, MF_STRING, 1006, L"Share via Local Wi-Fi (AirDrop)...");
             AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hMenu, MF_STRING, 1004, (selectedCount > 1) ? L"Compress Selected to ZIP..." : L"Compress to ZIP...");
             AppendMenuW(hMenu, MF_STRING, 1005, (selectedCount > 1) ? L"Delete Selected (Del)" : L"Remove from Tray (Del)");
@@ -1041,6 +1081,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             }
             else if (cmd == 1003)
                 TogglePinSelectedItems(hwnd);
+            else if (cmd == 1006 && !g_items[clickedIdx].isLoading)
+            {
+                OpenShareDialog(hwnd, g_items[clickedIdx].path);
+            }
             else if (cmd == 1004)
                 CompressSelectedToZip(hwnd);
             else if (cmd == 1005)
@@ -1051,6 +1095,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             HMENU hEmptyMenu = CreatePopupMenu();
             AppendMenuW(hEmptyMenu, MF_STRING, 1010, L"Paste from Clipboard (Ctrl+V)");
+            AppendMenuW(hEmptyMenu, MF_STRING, 1012, L"Network Share (AirDrop)...");
             AppendMenuW(hEmptyMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(hEmptyMenu, MF_STRING, 1011, L"Settings...");
 
@@ -1064,6 +1109,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
             if (cmd == 1010)
                 HandleClipboardPaste(hwnd);
+            else if (cmd == 1012)
+            {
+                OpenShareDialog(hwnd, L"");
+            }
             else if (cmd == 1011)
             {
                 OpenSettingsDialog(hwnd);
@@ -1156,6 +1205,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             else if (g_activeTab == TAB_MUSIC)
             {
                 RenderMusicPlayerTab(memDC, width, height, isDark, g_settings.dockEdge);
+            }
+            else if (g_activeTab == TAB_SHARE)
+            {
+                RenderShareTab(memDC, width, height, isDark, g_settings.dockEdge);
             }
             else
             {
@@ -1531,6 +1584,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     }
 
     case WM_DESTROY:
+        NetworkManager::Instance().Stop();
         ShutdownPlayerEngine();
         ShutdownQuickControls();
         ShutdownActionsEngine();
