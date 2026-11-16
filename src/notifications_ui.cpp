@@ -10,7 +10,23 @@
 std::vector<NotificationItem> g_notifications;
 std::mutex g_notificationsMutex;
 
+static void CheckAndExpireNotifications() {
+    ULONGLONG now = GetTickCount64();
+    std::lock_guard<std::mutex> lock(g_notificationsMutex);
+    for (auto& item : g_notifications) {
+        if (item.isPending && item.expiresAt > 0 && now >= item.expiresAt) {
+            item.isPending = false;
+            item.isExpired = true;
+            item.statusText = L"Expired (Timeout)";
+            if (item.decision) {
+                item.decision->store(3); // 3 = expired
+            }
+        }
+    }
+}
+
 int GetPendingNotificationCount() {
+    CheckAndExpireNotifications();
     std::lock_guard<std::mutex> lock(g_notificationsMutex);
     int count = 0;
     for (const auto& item : g_notifications) {
@@ -21,15 +37,17 @@ int GetPendingNotificationCount() {
 
 void AddTransferNotification(const std::string& id, const std::wstring& senderName, const std::string& senderIp,
                              const std::wstring& fileName, ULONGLONG fileSize,
-                             std::shared_ptr<std::atomic<int>> decision) {
+                             std::shared_ptr<std::atomic<int>> decision, int fileCount) {
     NotificationItem item;
     item.id = id;
     item.type = NotificationType::AIRDROP_REQUEST;
     item.senderName = senderName;
     item.senderIp = senderIp;
     item.fileName = fileName;
+    item.fileCount = fileCount;
     item.fileSize = fileSize;
     item.timestamp = GetTickCount64();
+    item.expiresAt = item.timestamp + 60000; // 1-minute expiration
     item.isPending = true;
     item.decision = decision;
 
@@ -43,7 +61,10 @@ void AddTransferNotification(const std::string& id, const std::wstring& senderNa
     }
 
     // Alert user with action toast & sound chime
-    ShowActionToast(L"AirDrop Request: " + senderName, L"\xE701", RGB(0, 160, 255));
+    std::wstring notifMsg = (fileCount > 1) 
+        ? (L"AirDrop (" + std::to_wstring(fileCount) + L" files) from " + senderName)
+        : (L"AirDrop: " + senderName);
+    ShowActionToast(notifMsg, L"\xE701", RGB(0, 160, 255));
     if (g_mainHwnd && IsWindow(g_mainHwnd)) {
         InvalidateRect(g_mainHwnd, nullptr, FALSE);
     }
@@ -103,6 +124,38 @@ void DeclineNotification(const std::string& id) {
     }
 }
 
+void RemoveNotification(const std::string& id) {
+    {
+        std::lock_guard<std::mutex> lock(g_notificationsMutex);
+        g_notifications.erase(
+            std::remove_if(g_notifications.begin(), g_notifications.end(), [&id](const NotificationItem& item) {
+                return item.id == id;
+            }),
+            g_notifications.end()
+        );
+    }
+    if (g_mainHwnd && IsWindow(g_mainHwnd)) {
+        InvalidateRect(g_mainHwnd, nullptr, FALSE);
+    }
+}
+
+void MarkNotificationsCompleted(const std::string& remoteIp) {
+    {
+        std::lock_guard<std::mutex> lock(g_notificationsMutex);
+        for (auto& item : g_notifications) {
+            if (item.isAccepted && !item.isCompleted) {
+                if (remoteIp.empty() || item.senderIp == remoteIp) {
+                    item.isCompleted = true;
+                    item.statusText = L"Received successfully";
+                }
+            }
+        }
+    }
+    if (g_mainHwnd && IsWindow(g_mainHwnd)) {
+        InvalidateRect(g_mainHwnd, nullptr, FALSE);
+    }
+}
+
 void ClearResolvedNotifications() {
     {
         std::lock_guard<std::mutex> lock(g_notificationsMutex);
@@ -125,11 +178,18 @@ struct NotifButtonHit {
     RECT rect;
 };
 
+struct CardCloseHit {
+    std::string id;
+    RECT rect;
+};
+
 static std::vector<NotifButtonHit> s_btnHits;
+static std::vector<CardCloseHit> s_cardCloseHits;
 static RECT s_clearAllRect = {};
 static bool s_clearAllHovered = false;
 static std::string s_hoveredBtnId = "";
 static bool s_hoveredBtnIsAccept = false;
+static std::string s_hoveredCardCloseId = "";
 
 static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
 {
@@ -184,10 +244,12 @@ int GetNotificationsTabDesiredHeight(int dockEdge) {
 }
 
 void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int dockEdge) {
+    CheckAndExpireNotifications();
     bool isVertical = (dockEdge == EDGE_LEFT || dockEdge == EDGE_RIGHT);
     bool isLeft = (dockEdge == EDGE_LEFT);
 
     s_btnHits.clear();
+    s_cardCloseHits.clear();
     s_clearAllRect = {0, 0, 0, 0};
 
     int contentLeft, contentTop, contentRight, contentBottom;
@@ -273,17 +335,17 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
         int centerY = listTop + (listBottom - listTop) / 2 - 10;
         RECT iconRc = {contentLeft, centerY - 24, contentRight, centerY + 8};
         SelectObject(hdc, iconFont);
-        SetTextColor(hdc, isDark ? RGB(90, 102, 125) : RGB(160, 170, 185));
+        SetTextColor(hdc, isDark ? RGB(90, 102, 125) : RGB(80, 92, 112));
         DrawTextW(hdc, L"\xE7E7", -1, &iconRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         RECT emptyTitleRc = {contentLeft, centerY + 12, contentRight, centerY + 28};
         SelectObject(hdc, boldFont);
-        SetTextColor(hdc, isDark ? RGB(180, 192, 215) : RGB(80, 90, 105));
+        SetTextColor(hdc, isDark ? RGB(180, 192, 215) : RGB(40, 50, 68));
         DrawTextW(hdc, L"No new notifications", -1, &emptyTitleRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         RECT emptySubRc = {contentLeft, centerY + 30, contentRight, centerY + 46};
         SelectObject(hdc, secFont);
-        SetTextColor(hdc, isDark ? RGB(110, 122, 142) : RGB(140, 150, 168));
+        SetTextColor(hdc, isDark ? RGB(110, 122, 142) : RGB(65, 78, 98));
         DrawTextW(hdc, L"Incoming AirDrop share requests will appear here.", -1, &emptySubRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else {
         int cardY = listTop;
@@ -311,17 +373,30 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
 
             // Sender & Time
             int textLeft = iconBadgeRc.right + 10;
-            RECT senderRc = {textLeft, cardRc.top + 10, cardRc.right - 80, cardRc.top + 26};
+            RECT senderRc = {textLeft, cardRc.top + 10, cardRc.right - 95, cardRc.top + 26};
             SelectObject(hdc, boldFont);
             SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(18, 24, 34));
             std::wstring senderDisplay = L"AirDrop: " + item.senderName;
-            DrawTextW(hdc, senderDisplay.c_str(), -1, &senderRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+            DrawTextW(hdc, senderDisplay.c_str(), -1, &senderRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
 
-            RECT timeRc = {cardRc.right - 75, cardRc.top + 10, cardRc.right - 10, cardRc.top + 26};
+            // Time Ago
+            RECT timeRc = {cardRc.right - 92, cardRc.top + 10, cardRc.right - 28, cardRc.top + 26};
             SelectObject(hdc, secFont);
-            SetTextColor(hdc, isDark ? RGB(120, 132, 155) : RGB(140, 150, 168));
+            SetTextColor(hdc, isDark ? RGB(120, 132, 155) : RGB(65, 78, 98));
             std::wstring timeAgo = FormatTimeAgo(item.timestamp);
             DrawTextW(hdc, timeAgo.c_str(), -1, &timeRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+
+            // Individual Card Close [X] Button
+            RECT closeRc = {cardRc.right - 24, cardRc.top + 8, cardRc.right - 6, cardRc.top + 26};
+            bool isCloseHov = (s_hoveredCardCloseId == item.id);
+            if (isCloseHov) {
+                COLORREF cBg = isDark ? RGB(55, 24, 28) : RGB(255, 225, 230);
+                DrawRoundedRect(hdc, closeRc, 4, cBg, RGB(239, 68, 68), 1);
+            }
+            SelectObject(hdc, smallIconFont);
+            SetTextColor(hdc, isCloseHov ? RGB(239, 68, 68) : (isDark ? RGB(130, 140, 160) : RGB(70, 80, 100)));
+            DrawTextW(hdc, L"\xE711", -1, &closeRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            s_cardCloseHits.push_back({item.id, closeRc});
 
             // File details box
             RECT fileBoxRc = {textLeft, cardRc.top + 28, cardRc.right - 10, cardRc.top + 54};
@@ -330,7 +405,7 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
 
             RECT fileIconRc = {fileBoxRc.left + 6, fileBoxRc.top, fileBoxRc.left + 22, fileBoxRc.bottom};
             SelectObject(hdc, smallIconFont);
-            SetTextColor(hdc, isDark ? RGB(160, 175, 205) : RGB(80, 95, 120));
+            SetTextColor(hdc, isDark ? RGB(160, 175, 205) : RGB(50, 65, 90));
             DrawTextW(hdc, L"\xE8A5", -1, &fileIconRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
             RECT fileNameRc = {fileBoxRc.left + 26, fileBoxRc.top, fileBoxRc.right - 70, fileBoxRc.bottom};
@@ -340,18 +415,28 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
 
             RECT fileSizeRc = {fileBoxRc.right - 65, fileBoxRc.top, fileBoxRc.right - 6, fileBoxRc.bottom};
             SelectObject(hdc, secFont);
-            SetTextColor(hdc, isDark ? RGB(140, 152, 175) : RGB(110, 120, 138));
+            SetTextColor(hdc, isDark ? RGB(140, 152, 175) : RGB(60, 70, 88));
             std::wstring sizeStr = FormatSize(item.fileSize);
             DrawTextW(hdc, sizeStr.c_str(), -1, &fileSizeRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
             // Action Buttons / Status
             if (item.isPending) {
-                // [Accept] Button
-                int btnW = 82;
-                int btnH = 28;
+                ULONGLONG nowTick = GetTickCount64();
+                int remSec = (item.expiresAt > nowTick) ? static_cast<int>((item.expiresAt - nowTick) / 1000) : 0;
+
+                int btnW = 76;
+                int btnH = 26;
                 int btnY = cardRc.bottom - btnH - 8;
 
-                RECT acceptRc = {cardRc.right - btnW * 2 - 16, btnY, cardRc.right - btnW - 10, btnY + btnH};
+                // Expiry countdown pill on the left
+                RECT expiryRc = {textLeft, btnY, cardRc.right - btnW * 2 - 20, btnY + btnH};
+                SelectObject(hdc, secFont);
+                SetTextColor(hdc, (remSec <= 15) ? RGB(239, 68, 68) : (isDark ? RGB(245, 158, 11) : RGB(180, 100, 0)));
+                std::wstring expText = L"Expires: " + std::to_wstring(remSec) + L"s";
+                DrawTextW(hdc, expText.c_str(), -1, &expiryRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+                // [Accept] Button
+                RECT acceptRc = {cardRc.right - btnW * 2 - 12, btnY, cardRc.right - btnW - 6, btnY + btnH};
                 bool isAcceptHover = (s_hoveredBtnId == item.id && s_hoveredBtnIsAccept);
                 COLORREF accBg = isAcceptHover ? RGB(5, 150, 105) : RGB(16, 185, 129);
                 DrawRoundedRect(hdc, acceptRc, 6, accBg, accBg, 0);
@@ -361,7 +446,7 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
                 DrawTextW(hdc, L"Accept", -1, &acceptRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
                 // [Decline] Button
-                RECT declineRc = {cardRc.right - btnW - 4, btnY, cardRc.right - 4, btnY + btnH};
+                RECT declineRc = {cardRc.right - btnW, btnY, cardRc.right - 4, btnY + btnH};
                 bool isDeclineHover = (s_hoveredBtnId == item.id && !s_hoveredBtnIsAccept);
                 COLORREF decBg = isDeclineHover ? (isDark ? RGB(65, 25, 30) : RGB(255, 225, 225))
                                                 : (isDark ? RGB(32, 38, 50) : RGB(230, 236, 246));
@@ -370,7 +455,7 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
                 DrawRoundedRect(hdc, declineRc, 6, decBg, decBorder, 1);
 
                 SelectObject(hdc, secFont);
-                SetTextColor(hdc, isDeclineHover ? RGB(239, 68, 68) : (isDark ? RGB(200, 210, 230) : RGB(70, 80, 95)));
+                SetTextColor(hdc, isDeclineHover ? RGB(239, 68, 68) : (isDark ? RGB(200, 210, 230) : RGB(40, 50, 68)));
                 DrawTextW(hdc, L"Decline", -1, &declineRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
                 s_btnHits.push_back({item.id, true, acceptRc});
@@ -378,12 +463,18 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
             } else {
                 RECT statusRc = {textLeft, cardRc.bottom - 26, cardRc.right - 10, cardRc.bottom - 6};
                 SelectObject(hdc, boldFont);
-                if (item.isAccepted) {
+                if (item.isCompleted) {
                     SetTextColor(hdc, RGB(52, 199, 89));
-                    DrawTextW(hdc, L"\xE73E  Accepted - File receiving...", -1, &statusRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+                    DrawTextW(hdc, L"\xE73E  Received successfully", -1, &statusRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+                } else if (item.isAccepted) {
+                    SetTextColor(hdc, RGB(0, 160, 255));
+                    DrawTextW(hdc, L"\xE895  Receiving files...", -1, &statusRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
                 } else if (item.isDeclined) {
                     SetTextColor(hdc, RGB(239, 68, 68));
                     DrawTextW(hdc, L"\xE711  Declined", -1, &statusRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+                } else if (item.isExpired) {
+                    SetTextColor(hdc, RGB(239, 68, 68));
+                    DrawTextW(hdc, L"\xE7BA  Expired (No response in 1 min)", -1, &statusRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
                 } else {
                     SetTextColor(hdc, isDark ? RGB(140, 150, 170) : RGB(100, 110, 125));
                     DrawTextW(hdc, item.statusText.c_str(), -1, &statusRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
@@ -410,6 +501,18 @@ bool HandleNotificationsMouseMove(HWND hwnd, POINT pt) {
         needRepaint = true;
     }
 
+    std::string newCloseHoverId = "";
+    for (const auto& hit : s_cardCloseHits) {
+        if (PtInRect(&hit.rect, pt)) {
+            newCloseHoverId = hit.id;
+            break;
+        }
+    }
+    if (newCloseHoverId != s_hoveredCardCloseId) {
+        s_hoveredCardCloseId = newCloseHoverId;
+        needRepaint = true;
+    }
+
     std::string newHoverId = "";
     bool newHoverIsAccept = false;
     for (const auto& hit : s_btnHits) {
@@ -429,15 +532,25 @@ bool HandleNotificationsMouseMove(HWND hwnd, POINT pt) {
     if (needRepaint && hwnd && IsWindow(hwnd)) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
-    return !newHoverId.empty() || newClearHover;
+    return !newHoverId.empty() || !newCloseHoverId.empty() || newClearHover;
 }
 
 bool HandleNotificationsClick(HWND hwnd, POINT pt) {
+    // 1. Clear individual notification
+    for (const auto& hit : s_cardCloseHits) {
+        if (PtInRect(&hit.rect, pt)) {
+            RemoveNotification(hit.id);
+            return true;
+        }
+    }
+
+    // 2. Clear all resolved
     if (PtInRect(&s_clearAllRect, pt)) {
         ClearResolvedNotifications();
         return true;
     }
 
+    // 3. Accept / Decline buttons
     for (const auto& hit : s_btnHits) {
         if (PtInRect(&hit.rect, pt)) {
             if (hit.isAccept) {

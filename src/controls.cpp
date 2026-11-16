@@ -968,9 +968,9 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
     HGDIOBJ oldF = SelectObject(hdc, iconFont);
     SetBkMode(hdc, TRANSPARENT);
 
-    COLORREF textInactive = isDark ? RGB(140, 148, 165) : RGB(140, 150, 168);
-    COLORREF textHover = isDark ? RGB(220, 225, 240) : RGB(60, 70, 90);
-    COLORREF textActive = isDark ? RGB(255, 255, 255) : RGB(15, 20, 30);
+    COLORREF textInactive = isDark ? RGB(140, 148, 165) : RGB(70, 80, 100);
+    COLORREF textHover = isDark ? RGB(220, 225, 240) : RGB(15, 23, 42);
+    COLORREF textActive = isDark ? RGB(255, 255, 255) : RGB(5, 10, 20);
 
     if (isVert)
     {
@@ -1663,7 +1663,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         bool iconCovered = (fillH >= 32);
         COLORREF iconCol = iconCovered
                                ? (isDark ? RGB(18, 20, 24) : RGB(255, 255, 255))
-                               : (isDark ? RGB(170, 175, 190) : RGB(70, 80, 100));
+                               : (isDark ? RGB(170, 175, 190) : RGB(35, 45, 65));
 
         HFONT sIconFont = CreateClearTypeFont(18, FW_NORMAL, L"Segoe MDL2 Assets");
         oldF = SelectObject(hdc, sIconFont);
@@ -1729,7 +1729,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         int badgeD = 22;
 
         COLORREF badgeBg = tl.active ? tl.activeBadge : (isDark ? RGB(44, 48, 62) : RGB(200, 208, 222));
-        COLORREF badgeIconCol = tl.active ? RGB(255, 255, 255) : (isDark ? RGB(190, 195, 205) : RGB(60, 70, 88));
+        COLORREF badgeIconCol = tl.active ? RGB(255, 255, 255) : (isDark ? RGB(190, 195, 205) : RGB(30, 40, 58));
         if (tl.id == TILE_MUTE && g_state.isMuted)
         {
             badgeBg = RGB(239, 68, 68);
@@ -1774,7 +1774,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
 
             HFONT arrowFont = CreateClearTypeFont(11, FW_NORMAL, L"Segoe MDL2 Assets");
             HGDIOBJ oldAF = SelectObject(hdc, arrowFont);
-            SetTextColor(hdc, isDark ? RGB(200, 215, 230) : RGB(60, 70, 85));
+            SetTextColor(hdc, isDark ? RGB(200, 215, 230) : RGB(40, 50, 70));
             DrawTextW(hdc, L"\xE76C", -1, &aRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             SelectObject(hdc, oldAF);
             DeleteObject(arrowFont);
@@ -1790,7 +1790,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         SelectObject(hdc, subFont);
         COLORREF subColor = tl.active
                                 ? (isDark ? RGB(190, 215, 255) : RGB(20, 95, 210))
-                                : (isDark ? RGB(145, 150, 165) : RGB(105, 115, 130));
+                                : (isDark ? RGB(145, 150, 165) : RGB(60, 70, 88));
         SetTextColor(hdc, subColor);
         RECT sRc = {tr.left + 10, tr.top + 46, textRight, tr.top + 59};
         DrawTextW(hdc, tl.subtitle.c_str(), -1, &sRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);

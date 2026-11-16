@@ -81,7 +81,7 @@ void UpdateThemeColors()
 
     // TEXT: Crisp pure white in Dark Mode, Deep Charcoal Black in Light Mode (Maximum contrast)
     g_theme.textPrimary = isDark ? RGB(255, 255, 255) : RGB(10, 10, 10);
-    g_theme.textSec = isDark ? RGB(175, 185, 205) : RGB(10, 10, 15);
+    g_theme.textSec = isDark ? RGB(175, 185, 205) : RGB(50, 60, 78);
 
     // Hover Pills
     g_theme.pillHover = isDark ? RGB(45, 50, 65) : RGB(215, 222, 236);
@@ -224,6 +224,16 @@ void TriggerExpand(HWND hwnd)
 {
     if (!g_isExpanded)
     {
+        // Task-based contextual expanding:
+        if (GetPendingNotificationCount() > 0)
+        {
+            g_activeTab = TAB_NOTIFICATIONS;
+        }
+        else if (g_media.hasActiveSession && g_media.isPlaying)
+        {
+            g_activeTab = TAB_MUSIC;
+        }
+
         g_isExpanded = true;
         PruneMissingItems(hwnd);
         CalculateTargetSize(true);
@@ -509,7 +519,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         InitQuickControls();
         InitActionsEngine();
         InitPlayerEngine();
-        NetworkManager::Instance().Start();
+        if (g_settings.enableAirDrop)
+        {
+            NetworkManager::Instance().Start();
+        }
         UpdateThemeColors();
         CleanupOldTempFiles(3);
         ApplyWindowBackdrop(hwnd, BackdropType::Acrylic);
@@ -840,6 +853,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         int x = static_cast<short>(LOWORD(lParam));
         int y = static_cast<short>(HIWORD(lParam));
         POINT pt = {x, y};
+
+        if (!g_isExpanded)
+        {
+            if (GetPendingNotificationCount() > 0)
+                g_activeTab = TAB_NOTIFICATIONS;
+            else if (g_media.hasActiveSession && g_media.isPlaying)
+                g_activeTab = TAB_MUSIC;
+
+            TriggerExpand(hwnd);
+            CalculateTargetSize(true);
+            SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
 
         if (PtInRect(&g_tabFilesRect, pt))
         {

@@ -740,6 +740,9 @@ void NetworkManager::HttpServerLoop() {
         g_transfer.isTransferring = false;
         g_transfer.progress = 1.0f;
 
+        // Mark notification card as completed / received
+        MarkNotificationsCompleted(req.remote_addr);
+
         // Trigger Notification Toast and completion sound
         std::wstring notifMsg = (totalFiles > 1)
             ? (L"Received " + std::to_wstring(totalFiles) + L" files from phone!")
@@ -805,30 +808,45 @@ void NetworkManager::HttpServerLoop() {
             json j = json::parse(req.body);
             std::string senderName = j.value("name", "Nearby Device");
             std::string fileName = j.value("filename", "Shared File");
+            int fileCount = j.value("count", 1);
             long long fileSize = j.value("size", 0LL);
 
             auto decision = std::make_shared<std::atomic<int>>(0);
             std::string notifId = std::to_string(GetTickCount64()) + "_" + std::to_string(rand());
 
             AddTransferNotification(notifId, Utf8ToWide(senderName), req.remote_addr,
-                                    Utf8ToWide(fileName), static_cast<ULONGLONG>(fileSize), decision);
+                                    Utf8ToWide(fileName), static_cast<ULONGLONG>(fileSize), decision, fileCount);
 
-            // Wait for user decision via Notifications tab in tray (up to 45 seconds)
+            // Wait for user decision via Notifications tab in tray (up to 60 seconds)
             int waitedMs = 0;
-            while (waitedMs < 45000 && decision->load() == 0 && m_running) {
+            while (waitedMs < 60000 && decision->load() == 0 && m_running) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 waitedMs += 100;
             }
 
             int choice = decision->load();
             bool accepted = (choice == 1);
+            bool expired = (choice == 3 || (choice == 0 && waitedMs >= 60000));
+
+            if (expired) {
+                std::lock_guard<std::mutex> lock(g_notificationsMutex);
+                for (auto& item : g_notifications) {
+                    if (item.id == notifId && item.isPending) {
+                        item.isPending = false;
+                        item.isExpired = true;
+                        item.statusText = L"Expired (Timeout)";
+                        break;
+                    }
+                }
+            }
 
             json resp;
             resp["accepted"] = accepted;
+            resp["expired"] = expired;
             res.set_content(resp.dump(), "application/json");
         } catch (...) {
             res.status = 400;
-            res.set_content("{\"accepted\":false}", "application/json");
+            res.set_content("{\"accepted\":false,\"expired\":false}", "application/json");
         }
     });
 
@@ -841,23 +859,41 @@ void NetworkManager::HttpServerLoop() {
 }
 
 bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstring& filePath, std::string& outError, int peerPort) {
-    std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open()) {
-        outError = "Could not open source file.";
+    bool dummyExpired = false;
+    return SendFilesToPeer(peerIp, {filePath}, outError, dummyExpired, peerPort);
+}
+
+bool NetworkManager::SendFilesToPeer(const std::string& peerIp, const std::vector<std::wstring>& filePaths, std::string& outError, bool& outExpired, int peerPort) {
+    outExpired = false;
+    if (filePaths.empty()) {
+        outError = "No files selected to send.";
         return false;
     }
 
-    file.seekg(0, std::ios::end);
-    size_t fileSize = static_cast<size_t>(file.tellg());
-    file.seekg(0, std::ios::beg);
+    ULONGLONG totalSize = 0;
+    std::vector<std::pair<std::wstring, ULONGLONG>> validFiles;
+    for (const auto& fp : filePaths) {
+        std::ifstream testF(fp, std::ios::binary | std::ios::ate);
+        if (testF.is_open()) {
+            ULONGLONG sz = static_cast<ULONGLONG>(testF.tellg());
+            totalSize += sz;
+            size_t lastS = fp.find_last_of(L"\\/");
+            std::wstring bName = (lastS == std::wstring::npos) ? fp : fp.substr(lastS + 1);
+            validFiles.push_back({bName, sz});
+        }
+    }
 
-    std::string content(fileSize, '\0');
-    file.read(&content[0], fileSize);
-    file.close();
+    if (validFiles.empty()) {
+        outError = "Could not open selected file(s).";
+        return false;
+    }
 
-    // Extract bare filename
-    size_t lastSlash = filePath.find_last_of(L"\\/");
-    std::wstring bareName = (lastSlash == std::wstring::npos) ? filePath : filePath.substr(lastSlash + 1);
+    std::wstring displayFileName;
+    if (validFiles.size() == 1) {
+        displayFileName = validFiles[0].first;
+    } else {
+        displayFileName = validFiles[0].first + L" (+" + std::to_wstring(validFiles.size() - 1) + L" files)";
+    }
 
     std::wstring myName = g_settings.username;
     if (myName.empty()) {
@@ -870,54 +906,83 @@ bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstrin
     // Step 1: Handshake request-transfer
     int targetPort = (peerPort > 0) ? peerPort : GetHttpPort();
     httplib::Client cli(peerIp, targetPort);
-    cli.set_connection_timeout(5);
-    cli.set_read_timeout(30);
+    cli.set_connection_timeout(6);
+    cli.set_read_timeout(65); // Give ample time for receiver's 60s prompt
 
     json reqJ;
     reqJ["name"] = WideToUtf8(myName);
-    reqJ["filename"] = WideToUtf8(bareName);
-    reqJ["size"] = static_cast<long long>(fileSize);
+    reqJ["filename"] = WideToUtf8(displayFileName);
+    reqJ["count"] = static_cast<int>(validFiles.size());
+    reqJ["size"] = static_cast<long long>(totalSize);
 
     auto res = cli.Post("/request-transfer", reqJ.dump(), "application/json");
     if (!res || res.status != 200) {
-        outError = "Peer did not respond to transfer request.";
+        outError = "Peer did not respond (Request timed out).";
+        outExpired = true;
+        ShowActionToast(L"AirDrop expired: Peer did not respond", L"\xE7BA", RGB(239, 68, 68));
         return false;
     }
 
     try {
         json respJ = json::parse(res.body);
-        if (!respJ.value("accepted", false)) {
-            outError = "Transfer was declined by peer.";
-            ShowActionToast(L"AirDrop Declined: " + bareName, L"\xE711", RGB(239, 68, 68));
+        bool isAccepted = respJ.value("accepted", false);
+        bool isExp = respJ.value("expired", false);
+
+        if (isExp) {
+            outExpired = true;
+            outError = "Transfer expired: Peer did not respond within 1 min.";
+            ShowActionToast(L"AirDrop expired: Peer timed out", L"\xE7BA", RGB(239, 68, 68));
             return false;
-        } else {
-            ShowActionToast(L"AirDrop Accepted! Sending " + bareName, L"\xE73E", RGB(52, 199, 89));
         }
+
+        if (!isAccepted) {
+            outError = "Transfer was declined by peer.";
+            ShowActionToast(L"AirDrop Declined: " + displayFileName, L"\xE711", RGB(239, 68, 68));
+            return false;
+        }
+
+        ShowActionToast(L"AirDrop Accepted! Sending " + displayFileName, L"\xE73E", RGB(52, 199, 89));
     } catch (...) {
         outError = "Invalid response from peer.";
         return false;
     }
 
-    // Step 2: Stream / Upload file via multipart POST /upload
+    // Step 2: Stream / Upload files via multipart POST /upload
     g_transfer.isTransferring = true;
     g_transfer.isSending = true;
-    g_transfer.currentFileName = bareName;
+    g_transfer.currentFileName = displayFileName;
     g_transfer.peerName = Utf8ToWide(peerIp);
-    g_transfer.progress = 0.5f;
+    g_transfer.progress = 0.1f;
     g_transfer.startTime = GetTickCount64();
 
     if (g_mainHwnd && IsWindow(g_mainHwnd)) {
         InvalidateRect(g_mainHwnd, nullptr, FALSE);
     }
 
-    httplib::MultipartFormData item;
-    item.name = "file";
-    item.filename = WideToUtf8(bareName);
-    item.content = std::move(content);
-    item.content_type = "application/octet-stream";
-
     httplib::MultipartFormDataItems items;
-    items.push_back(std::move(item));
+    for (size_t i = 0; i < filePaths.size(); ++i) {
+        const auto& fp = filePaths[i];
+        std::ifstream file(fp, std::ios::binary);
+        if (!file.is_open()) continue;
+
+        file.seekg(0, std::ios::end);
+        size_t fileSize = static_cast<size_t>(file.tellg());
+        file.seekg(0, std::ios::beg);
+
+        std::string content(fileSize, '\0');
+        file.read(&content[0], fileSize);
+        file.close();
+
+        size_t lastSlash = fp.find_last_of(L"\\/");
+        std::wstring bareName = (lastSlash == std::wstring::npos) ? fp : fp.substr(lastSlash + 1);
+
+        httplib::MultipartFormData item;
+        item.name = "file_" + std::to_string(i);
+        item.filename = WideToUtf8(bareName);
+        item.content = std::move(content);
+        item.content_type = "application/octet-stream";
+        items.push_back(std::move(item));
+    }
 
     auto uploadRes = cli.Post("/upload", items);
 
@@ -926,14 +991,14 @@ bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstrin
 
     if (!uploadRes || uploadRes.status != 200) {
         outError = "Upload failed during streaming.";
-        ShowActionToast(L"Send failed: " + bareName, L"\xE711", RGB(239, 68, 68));
+        ShowActionToast(L"Send failed: " + displayFileName, L"\xE711", RGB(239, 68, 68));
         if (g_mainHwnd && IsWindow(g_mainHwnd)) {
             InvalidateRect(g_mainHwnd, nullptr, FALSE);
         }
         return false;
     }
 
-    ShowActionToast(L"AirDrop Sent: " + bareName, L"\xE724", RGB(0, 160, 255));
+    ShowActionToast(L"AirDrop Sent: " + displayFileName, L"\xE724", RGB(0, 160, 255));
     if (g_mainHwnd && IsWindow(g_mainHwnd)) {
         InvalidateRect(g_mainHwnd, nullptr, FALSE);
     }

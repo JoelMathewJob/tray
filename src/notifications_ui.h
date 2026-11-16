@@ -16,7 +16,9 @@ void HandleNotificationsMouseUp(HWND hwnd);
 
 void AddTransferNotification(const std::string& id, const std::wstring& senderName, const std::string& senderIp,
                              const std::wstring& fileName, ULONGLONG fileSize,
-                             std::shared_ptr<std::atomic<int>> decision);
+                             std::shared_ptr<std::atomic<int>> decision, int fileCount = 1);
 void AcceptNotification(const std::string& id);
 void DeclineNotification(const std::string& id);
+void RemoveNotification(const std::string& id);
+void MarkNotificationsCompleted(const std::string& remoteIp = "");
 void ClearResolvedNotifications();

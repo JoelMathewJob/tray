@@ -86,6 +86,7 @@ struct AppSettings
     int playerVisualizerColor = 0; // 0=Coral, 1=Cyan, 2=Emerald, 3=Amber
 
     // Network / AirDrop preferences
+    bool enableAirDrop = true;
     std::wstring username = L"";
 };
 
@@ -138,13 +139,17 @@ struct NotificationItem {
     std::string senderIp;
     int senderPort = 8088;
     std::wstring fileName;
+    int fileCount = 1;
     ULONGLONG fileSize = 0;
     ULONGLONG timestamp = 0;
+    ULONGLONG expiresAt = 0;
     bool isPending = true;
     bool isAccepted = false;
     bool isDeclined = false;
+    bool isExpired = false;
+    bool isCompleted = false;
     std::wstring statusText;
-    std::shared_ptr<std::atomic<int>> decision; // 0 = pending, 1 = accepted, 2 = declined
+    std::shared_ptr<std::atomic<int>> decision; // 0 = pending, 1 = accepted, 2 = declined, 3 = expired
 };
 
 extern std::vector<NotificationItem> g_notifications;
