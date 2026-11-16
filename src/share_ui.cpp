@@ -635,7 +635,7 @@ bool HandleShareTabClick(HWND hwnd, POINT pt)
             std::wstring filePath = s_activeFilePath;
             std::thread([hwnd, targetPeer, filePath]() {
                 std::string err;
-                bool ok = NetworkManager::Instance().SendFileToPeer(targetPeer.ip, filePath, err);
+                bool ok = NetworkManager::Instance().SendFileToPeer(targetPeer.ip, filePath, err, targetPeer.port);
                 s_isTransferring = false;
                 if (ok) {
                     s_statusMessage = L"Transfer to " + targetPeer.name + L" completed successfully!";
