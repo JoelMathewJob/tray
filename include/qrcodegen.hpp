@@ -16,7 +16,11 @@ namespace qrcodegen {
 class QrSegment final {
 public:
     enum class Mode {
-        NUMERIC, ALPHANUMERIC, BYTE, KANJI, ECI
+        NUMERIC = 0x1,
+        ALPHANUMERIC = 0x2,
+        BYTE = 0x4,
+        KANJI = 0x8,
+        ECI = 0x7
     };
 
     static QrSegment makeBytes(const std::vector<uint8_t> &data);

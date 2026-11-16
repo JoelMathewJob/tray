@@ -119,6 +119,7 @@ struct DiscoveredPeer
     std::string ip;
     std::wstring name;
     std::string deviceType; // "pc", "mobile", etc.
+    int port = 8088;
     ULONGLONG lastSeenTick = 0;
 };
 

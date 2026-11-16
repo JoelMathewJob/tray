@@ -22,7 +22,7 @@ public:
     std::string GetLocalIP();
     int GetHttpPort() const { return m_httpPort.load(); }
 
-    bool SendFileToPeer(const std::string& peerIp, const std::wstring& filePath, std::string& outError);
+    bool SendFileToPeer(const std::string& peerIp, const std::wstring& filePath, std::string& outError, int peerPort = 8088);
 
 private:
     NetworkManager() = default;

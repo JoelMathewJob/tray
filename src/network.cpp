@@ -2,6 +2,9 @@
 #include "actions.h"
 #include <httplib.h>
 #include <nlohmann/json.hpp>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -11,6 +14,85 @@ using json = nlohmann::json;
 
 std::vector<DiscoveredPeer> g_peers;
 std::mutex g_peersMutex;
+
+static std::string GetInstanceId() {
+    static std::string s_id;
+    if (s_id.empty()) {
+        s_id = std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64());
+    }
+    return s_id;
+}
+
+struct LocalAdapterInfo {
+    std::string ip;
+    std::string bcast;
+    std::string name;
+    bool isWifi;
+};
+
+static std::vector<LocalAdapterInfo> GetLocalAdapters() {
+    std::vector<LocalAdapterInfo> result;
+    ULONG bufLen = 16384;
+    std::vector<BYTE> buffer(bufLen);
+    PIP_ADAPTER_ADDRESSES adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+
+    ULONG flags = GAA_FLAG_INCLUDE_PREFIX | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    DWORD ret = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufLen);
+    if (ret == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(bufLen);
+        adapters = reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+        ret = GetAdaptersAddresses(AF_INET, flags, nullptr, adapters, &bufLen);
+    }
+
+    if (ret != NO_ERROR) return result;
+
+    for (PIP_ADAPTER_ADDRESSES pCurr = adapters; pCurr; pCurr = pCurr->Next) {
+        if (pCurr->OperStatus != IfOperStatusUp) continue;
+        if (pCurr->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+
+        bool isWifi = (pCurr->IfType == IF_TYPE_IEEE80211);
+        std::string friendlyName;
+        if (pCurr->FriendlyName) {
+            int len = WideCharToMultiByte(CP_UTF8, 0, pCurr->FriendlyName, -1, nullptr, 0, nullptr, nullptr);
+            if (len > 0) {
+                friendlyName.resize(len - 1);
+                WideCharToMultiByte(CP_UTF8, 0, pCurr->FriendlyName, -1, &friendlyName[0], len, nullptr, nullptr);
+            }
+        }
+
+        for (PIP_ADAPTER_UNICAST_ADDRESS pUni = pCurr->FirstUnicastAddress; pUni; pUni = pUni->Next) {
+            sockaddr* sa = pUni->Address.lpSockaddr;
+            if (sa && sa->sa_family == AF_INET) {
+                sockaddr_in* sin = reinterpret_cast<sockaddr_in*>(sa);
+                char ipStr[INET_ADDRSTRLEN] = {0};
+                inet_ntop(AF_INET, &sin->sin_addr, ipStr, sizeof(ipStr));
+
+                // Ignore link-local APIPA 169.254.x.x
+                if (strncmp(ipStr, "169.254.", 8) == 0) continue;
+
+                // Calculate subnet mask from OnLinkPrefixLength
+                ULONG prefixLen = pUni->OnLinkPrefixLength;
+                ULONG mask = (prefixLen == 0 || prefixLen > 32) ? 0xFFFFFF00 : (~0UL << (32 - prefixLen));
+                ULONG maskNbo = htonl(mask);
+                ULONG ipNbo = sin->sin_addr.s_addr;
+                ULONG bcastNbo = ipNbo | (~maskNbo);
+
+                char bcastStr[INET_ADDRSTRLEN] = {0};
+                in_addr bcastAddr;
+                bcastAddr.s_addr = bcastNbo;
+                inet_ntop(AF_INET, &bcastAddr, bcastStr, sizeof(bcastStr));
+
+                LocalAdapterInfo entry;
+                entry.ip = ipStr;
+                entry.bcast = bcastStr;
+                entry.name = friendlyName;
+                entry.isWifi = isWifi;
+                result.push_back(entry);
+            }
+        }
+    }
+    return result;
+}
 
 static std::string WideToUtf8(const std::wstring& wstr) {
     if (wstr.empty()) return "";
@@ -45,37 +127,53 @@ NetworkManager::~NetworkManager() {
 
 std::string NetworkManager::GetLocalIP() {
     ULONGLONG now = GetTickCount64();
-    if (!m_cachedLocalIp.empty() && (now - m_lastIpCheck < 10000)) {
+    if (!m_cachedLocalIp.empty() && (now - m_lastIpCheck < 5000)) {
         return m_cachedLocalIp;
     }
     m_lastIpCheck = now;
 
+    auto adapters = GetLocalAdapters();
+
+    // 1. Prefer Wi-Fi adapter
+    for (const auto& a : adapters) {
+        if (a.isWifi && !a.ip.empty() && a.ip != "127.0.0.1") {
+            m_cachedLocalIp = a.ip;
+            return m_cachedLocalIp;
+        }
+    }
+
+    // 2. Any active LAN adapter
+    for (const auto& a : adapters) {
+        if (!a.ip.empty() && a.ip != "127.0.0.1") {
+            m_cachedLocalIp = a.ip;
+            return m_cachedLocalIp;
+        }
+    }
+
+    // 3. Fallback: probe socket
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s == INVALID_SOCKET) {
-        m_cachedLocalIp = "127.0.0.1";
-        return m_cachedLocalIp;
+    if (s != INVALID_SOCKET) {
+        sockaddr_in probeAddr = {};
+        probeAddr.sin_family = AF_INET;
+        probeAddr.sin_port = htons(9);
+        inet_pton(AF_INET, "8.8.8.8", &probeAddr.sin_addr);
+        if (connect(s, reinterpret_cast<sockaddr*>(&probeAddr), sizeof(probeAddr)) == 0) {
+            sockaddr_in localAddr = {};
+            int addrLen = sizeof(localAddr);
+            if (getsockname(s, reinterpret_cast<sockaddr*>(&localAddr), &addrLen) == 0) {
+                char ipStr[INET_ADDRSTRLEN] = {0};
+                inet_ntop(AF_INET, &localAddr.sin_addr, ipStr, sizeof(ipStr));
+                if (strlen(ipStr) > 0 && strcmp(ipStr, "0.0.0.0") != 0) {
+                    m_cachedLocalIp = ipStr;
+                    closesocket(s);
+                    return m_cachedLocalIp;
+                }
+            }
+        }
+        closesocket(s);
     }
 
-    sockaddr_in probeAddr = {};
-    probeAddr.sin_family = AF_INET;
-    probeAddr.sin_port = htons(9);
-    inet_pton(AF_INET, "8.8.8.8", &probeAddr.sin_addr);
-
-    connect(s, reinterpret_cast<sockaddr*>(&probeAddr), sizeof(probeAddr));
-
-    sockaddr_in localAddr = {};
-    int addrLen = sizeof(localAddr);
-    getsockname(s, reinterpret_cast<sockaddr*>(&localAddr), &addrLen);
-
-    char ipStr[INET_ADDRSTRLEN] = {0};
-    inet_ntop(AF_INET, &localAddr.sin_addr, ipStr, sizeof(ipStr));
-    closesocket(s);
-
-    if (strlen(ipStr) > 0 && strcmp(ipStr, "0.0.0.0") != 0) {
-        m_cachedLocalIp = ipStr;
-    } else {
-        m_cachedLocalIp = "127.0.0.1";
-    }
+    m_cachedLocalIp = "127.0.0.1";
     return m_cachedLocalIp;
 }
 
@@ -98,7 +196,7 @@ void NetworkManager::Stop() {
         m_httpServer->stop();
     }
 
-    // Wake up listening sockets
+    // Wake up listening socket
     SOCKET wakeSock = socket(AF_INET, SOCK_DGRAM, 0);
     if (wakeSock != INVALID_SOCKET) {
         sockaddr_in loopback = {};
@@ -116,18 +214,8 @@ void NetworkManager::Stop() {
 }
 
 void NetworkManager::UdpBroadcastLoop() {
-    SOCKET bcSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (bcSock == INVALID_SOCKET) return;
-
-    int broadcastEnable = 1;
-    setsockopt(bcSock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&broadcastEnable), sizeof(broadcastEnable));
-
-    sockaddr_in destAddr = {};
-    destAddr.sin_family = AF_INET;
-    destAddr.sin_port = htons(8888);
-    destAddr.sin_addr.s_addr = INADDR_BROADCAST;
-
     while (m_running) {
+        auto adapters = GetLocalAdapters();
         std::string myIp = GetLocalIP();
         std::wstring myName = g_settings.username;
         if (myName.empty()) {
@@ -139,21 +227,79 @@ void NetworkManager::UdpBroadcastLoop() {
 
         json j;
         j["app"] = "WinTray";
+        j["id"] = GetInstanceId();
         j["name"] = WideToUtf8(myName);
         j["ip"] = myIp;
         j["device"] = "pc";
         j["port"] = GetHttpPort();
 
         std::string payload = j.dump();
-        sendto(bcSock, payload.data(), static_cast<int>(payload.size()), 0,
-               reinterpret_cast<sockaddr*>(&destAddr), sizeof(destAddr));
 
-        for (int i = 0; i < 30 && m_running; ++i) {
+        sockaddr_in mcastAddr = {};
+        mcastAddr.sin_family = AF_INET;
+        mcastAddr.sin_port = htons(8888);
+        inet_pton(AF_INET, "239.255.88.88", &mcastAddr.sin_addr);
+
+        sockaddr_in globalBcastAddr = {};
+        globalBcastAddr.sin_family = AF_INET;
+        globalBcastAddr.sin_port = htons(8888);
+        globalBcastAddr.sin_addr.s_addr = INADDR_BROADCAST;
+
+        if (adapters.empty()) {
+            SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (s != INVALID_SOCKET) {
+                int bcast = 1;
+                setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast), sizeof(bcast));
+                sendto(s, payload.data(), static_cast<int>(payload.size()), 0,
+                       reinterpret_cast<sockaddr*>(&globalBcastAddr), sizeof(globalBcastAddr));
+                sendto(s, payload.data(), static_cast<int>(payload.size()), 0,
+                       reinterpret_cast<sockaddr*>(&mcastAddr), sizeof(mcastAddr));
+                closesocket(s);
+            }
+        } else {
+            for (const auto& a : adapters) {
+                SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+                if (s == INVALID_SOCKET) continue;
+
+                int bcast = 1;
+                setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast), sizeof(bcast));
+
+                // Bind to adapter's IP so Windows transmits packets on this specific interface!
+                sockaddr_in localSin = {};
+                localSin.sin_family = AF_INET;
+                localSin.sin_port = 0;
+                inet_pton(AF_INET, a.ip.c_str(), &localSin.sin_addr);
+                bind(s, reinterpret_cast<sockaddr*>(&localSin), sizeof(localSin));
+
+                // Set multicast interface for this adapter
+                in_addr ifAddr = localSin.sin_addr;
+                setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, reinterpret_cast<const char*>(&ifAddr), sizeof(ifAddr));
+
+                // 1. Send to adapter directed subnet broadcast (e.g. 192.168.0.255)
+                sockaddr_in subnetBcastAddr = {};
+                subnetBcastAddr.sin_family = AF_INET;
+                subnetBcastAddr.sin_port = htons(8888);
+                inet_pton(AF_INET, a.bcast.c_str(), &subnetBcastAddr.sin_addr);
+                sendto(s, payload.data(), static_cast<int>(payload.size()), 0,
+                       reinterpret_cast<sockaddr*>(&subnetBcastAddr), sizeof(subnetBcastAddr));
+
+                // 2. Send to global limited broadcast (255.255.255.255)
+                sendto(s, payload.data(), static_cast<int>(payload.size()), 0,
+                       reinterpret_cast<sockaddr*>(&globalBcastAddr), sizeof(globalBcastAddr));
+
+                // 3. Send to local multicast group (239.255.88.88)
+                sendto(s, payload.data(), static_cast<int>(payload.size()), 0,
+                       reinterpret_cast<sockaddr*>(&mcastAddr), sizeof(mcastAddr));
+
+                closesocket(s);
+            }
+        }
+
+        // Sleep 1.5 seconds between discovery beacons
+        for (int i = 0; i < 15 && m_running; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
-
-    closesocket(bcSock);
 }
 
 void NetworkManager::UdpListenLoop() {
@@ -163,7 +309,10 @@ void NetworkManager::UdpListenLoop() {
     int reuse = 1;
     setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
 
-    DWORD tv = 2000;
+    int bcast = 1;
+    setsockopt(listenSock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&bcast), sizeof(bcast));
+
+    DWORD tv = 1500;
     setsockopt(listenSock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
 
     sockaddr_in bindAddr = {};
@@ -176,7 +325,13 @@ void NetworkManager::UdpListenLoop() {
         return;
     }
 
-    char buf[2048];
+    // Join local multicast group 239.255.88.88
+    ip_mreq mreq = {};
+    inet_pton(AF_INET, "239.255.88.88", &mreq.imr_multiaddr);
+    mreq.imr_interface.s_addr = INADDR_ANY;
+    setsockopt(listenSock, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&mreq), sizeof(mreq));
+
+    char buf[4096];
     while (m_running) {
         sockaddr_in senderAddr = {};
         int senderLen = sizeof(senderAddr);
@@ -189,23 +344,51 @@ void NetworkManager::UdpListenLoop() {
             buf[bytes] = '\0';
             std::string raw(buf, bytes);
 
+            if (raw == "EXIT") {
+                continue;
+            }
+
+            char actualSenderIp[INET_ADDRSTRLEN] = {0};
+            inet_ntop(AF_INET, &senderAddr.sin_addr, actualSenderIp, sizeof(actualSenderIp));
+
             try {
                 json j = json::parse(raw);
                 if (j.value("app", "") == "WinTray") {
+                    std::string senderId = j.value("id", "");
+                    // Filter out our own beacons using unique instance ID
+                    if (!senderId.empty() && senderId == GetInstanceId()) {
+                        continue;
+                    }
+
                     std::string peerIp = j.value("ip", "");
+                    if (peerIp.empty() || peerIp == "127.0.0.1" || peerIp == "0.0.0.0") {
+                        peerIp = actualSenderIp;
+                    }
+
+                    // Check that the IP is not one of our own local adapter IPs
+                    auto myAdapters = GetLocalAdapters();
+                    bool isSelf = false;
+                    for (const auto& a : myAdapters) {
+                        if (peerIp == a.ip || std::string(actualSenderIp) == a.ip) {
+                            isSelf = true;
+                            break;
+                        }
+                    }
+                    if (isSelf) continue;
+
                     std::string peerName = j.value("name", "Unknown PC");
                     std::string peerDev = j.value("device", "pc");
+                    int peerPort = j.value("port", 8088);
 
-                    std::string myIp = GetLocalIP();
-
-                    // Filter out our own broadcasts
-                    if (!peerIp.empty() && peerIp != myIp && peerIp != "127.0.0.1") {
+                    bool peerAdded = false;
+                    {
                         std::lock_guard<std::mutex> lock(g_peersMutex);
                         bool found = false;
                         for (auto& p : g_peers) {
                             if (p.ip == peerIp) {
                                 p.name = Utf8ToWide(peerName);
                                 p.deviceType = peerDev;
+                                p.port = peerPort;
                                 p.lastSeenTick = now;
                                 found = true;
                                 break;
@@ -216,9 +399,15 @@ void NetworkManager::UdpListenLoop() {
                             peer.ip = peerIp;
                             peer.name = Utf8ToWide(peerName);
                             peer.deviceType = peerDev;
+                            peer.port = peerPort;
                             peer.lastSeenTick = now;
                             g_peers.push_back(peer);
+                            peerAdded = true;
                         }
+                    }
+
+                    if (peerAdded && g_mainHwnd && IsWindow(g_mainHwnd)) {
+                        InvalidateRect(g_mainHwnd, nullptr, FALSE);
                     }
                 }
             } catch (...) {}
@@ -227,12 +416,16 @@ void NetworkManager::UdpListenLoop() {
         // Prune peers older than 10 seconds
         {
             std::lock_guard<std::mutex> lock(g_peersMutex);
+            size_t before = g_peers.size();
             g_peers.erase(
                 std::remove_if(g_peers.begin(), g_peers.end(), [now](const DiscoveredPeer& p) {
                     return (now - p.lastSeenTick) > 10000;
                 }),
                 g_peers.end()
             );
+            if (g_peers.size() != before && g_mainHwnd && IsWindow(g_mainHwnd)) {
+                InvalidateRect(g_mainHwnd, nullptr, FALSE);
+            }
         }
     }
 
@@ -563,7 +756,7 @@ void NetworkManager::HttpServerLoop() {
     }
 }
 
-bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstring& filePath, std::string& outError) {
+bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstring& filePath, std::string& outError, int peerPort) {
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open()) {
         outError = "Could not open source file.";
@@ -591,7 +784,8 @@ bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstrin
     }
 
     // Step 1: Handshake request-transfer
-    httplib::Client cli(peerIp, GetHttpPort());
+    int targetPort = (peerPort > 0) ? peerPort : GetHttpPort();
+    httplib::Client cli(peerIp, targetPort);
     cli.set_connection_timeout(5);
     cli.set_read_timeout(30);
 
