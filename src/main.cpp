@@ -7,6 +7,7 @@
 #include "actions.h"
 #include "player.h"
 #include "share_ui.h"
+#include "notifications_ui.h"
 #include "network.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -257,6 +258,12 @@ void CalculateTargetSize(bool expanded)
         {
             g_targetW = static_cast<float>(GetShareTabDesiredWidth(g_settings.dockEdge));
             g_targetH = static_cast<float>(GetShareTabDesiredHeight(g_settings.dockEdge));
+            return;
+        }
+        if (g_activeTab == TAB_NOTIFICATIONS)
+        {
+            g_targetW = static_cast<float>(GetNotificationsTabDesiredWidth(g_settings.dockEdge));
+            g_targetH = static_cast<float>(GetNotificationsTabDesiredHeight(g_settings.dockEdge));
             return;
         }
 
@@ -567,7 +574,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 g_transfer.isTransferring ||
                 (!g_isExpanded && g_settings.collapsedStyle != COLLAPSED_DEFAULT) ||
                 (g_isExpanded && g_activeTab == TAB_MUSIC && (g_media.isPlaying || g_media.hasActiveSession)) ||
-                (g_isExpanded && g_activeTab == TAB_SHARE))
+                (g_isExpanded && g_activeTab == TAB_SHARE) ||
+                (g_isExpanded && g_activeTab == TAB_NOTIFICATIONS))
             {
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
@@ -717,15 +725,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         bool newActionsHover = PtInRect(&g_tabActionsRect, pt);
         bool newMusicHover = PtInRect(&g_tabMusicRect, pt);
         bool newShareHover = PtInRect(&g_tabShareRect, pt);
+        bool newNotificationsHover = PtInRect(&g_tabNotificationsRect, pt);
         if (newFilesHover != g_tabFilesHovered || newControlsHover != g_tabControlsHovered ||
             newActionsHover != g_tabActionsHovered || newMusicHover != g_tabMusicHovered ||
-            newShareHover != g_tabShareHovered)
+            newShareHover != g_tabShareHovered || newNotificationsHover != g_tabNotificationsHovered)
         {
             g_tabFilesHovered = newFilesHover;
             g_tabControlsHovered = newControlsHover;
             g_tabActionsHovered = newActionsHover;
             g_tabMusicHovered = newMusicHover;
             g_tabShareHovered = newShareHover;
+            g_tabNotificationsHovered = newNotificationsHover;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
 
@@ -747,6 +757,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else if (g_isExpanded && g_activeTab == TAB_SHARE)
         {
             if (HandleShareTabMouseMove(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_NOTIFICATIONS)
+        {
+            if (HandleNotificationsMouseMove(hwnd, pt))
                 return 0;
         }
 
@@ -800,6 +815,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_tabActionsHovered = false;
         g_tabMusicHovered = false;
         g_tabShareHovered = false;
+        g_tabNotificationsHovered = false;
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
         g_isDraggingWindow = false;
@@ -887,6 +903,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
         }
 
+        if (PtInRect(&g_tabNotificationsRect, pt))
+        {
+            if (g_activeTab != TAB_NOTIFICATIONS)
+            {
+                g_activeTab = TAB_NOTIFICATIONS;
+                CalculateTargetSize(true);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+            return 0;
+        }
+
         if (PtInRect(&g_settingsBtnRect, pt))
         {
             OpenSettingsDialog(hwnd);
@@ -913,6 +941,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else if (g_isExpanded && g_activeTab == TAB_SHARE)
         {
             if (HandleShareTabClick(hwnd, pt))
+                return 0;
+        }
+        else if (g_isExpanded && g_activeTab == TAB_NOTIFICATIONS)
+        {
+            if (HandleNotificationsClick(hwnd, pt))
                 return 0;
         }
 
@@ -996,6 +1029,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_LBUTTONUP:
         HandleQuickControlsMouseUp(hwnd);
         HandleMusicPlayerMouseUp(hwnd);
+        HandleNotificationsMouseUp(hwnd);
         if (g_dragWindowCandidate || g_isDraggingWindow)
         {
             if (g_isDraggingWindow)
@@ -1210,6 +1244,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             else if (g_activeTab == TAB_SHARE)
             {
                 RenderShareTab(memDC, width, height, isDark, g_settings.dockEdge);
+            }
+            else if (g_activeTab == TAB_NOTIFICATIONS)
+            {
+                RenderNotificationsTab(memDC, width, height, isDark, g_settings.dockEdge);
             }
             else
             {

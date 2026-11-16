@@ -1,5 +1,6 @@
 #include "network.h"
 #include "actions.h"
+#include "notifications_ui.h"
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <winsock2.h>
@@ -798,24 +799,32 @@ void NetworkManager::HttpServerLoop() {
         res.set_content(content, "application/octet-stream");
     });
 
-    // POST /request-transfer -> PC-to-PC Handshake prompt
-    svr.Post("/request-transfer", [](const httplib::Request& req, httplib::Response& res) {
+    // POST /request-transfer -> PC-to-PC Handshake (Tray Notification)
+    svr.Post("/request-transfer", [this](const httplib::Request& req, httplib::Response& res) {
         try {
             json j = json::parse(req.body);
             std::string senderName = j.value("name", "Nearby Device");
             std::string fileName = j.value("filename", "Shared File");
             long long fileSize = j.value("size", 0LL);
 
-            std::wstring prompt = L"Incoming AirDrop file transfer:\n\n"
-                                  L"From: " + Utf8ToWide(senderName) + L"\n"
-                                  L"File: " + Utf8ToWide(fileName) + L" (" + FormatFileSize(fileSize) + L")\n\n"
-                                  L"Do you want to accept and receive this file?";
+            auto decision = std::make_shared<std::atomic<int>>(0);
+            std::string notifId = std::to_string(GetTickCount64()) + "_" + std::to_string(rand());
 
-            int choice = MessageBoxW(g_mainHwnd, prompt.c_str(), L"WinTray AirDrop Transfer",
-                                     MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+            AddTransferNotification(notifId, Utf8ToWide(senderName), req.remote_addr,
+                                    Utf8ToWide(fileName), static_cast<ULONGLONG>(fileSize), decision);
+
+            // Wait for user decision via Notifications tab in tray (up to 45 seconds)
+            int waitedMs = 0;
+            while (waitedMs < 45000 && decision->load() == 0 && m_running) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                waitedMs += 100;
+            }
+
+            int choice = decision->load();
+            bool accepted = (choice == 1);
 
             json resp;
-            resp["accepted"] = (choice == IDYES);
+            resp["accepted"] = accepted;
             res.set_content(resp.dump(), "application/json");
         } catch (...) {
             res.status = 400;
@@ -879,7 +888,10 @@ bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstrin
         json respJ = json::parse(res.body);
         if (!respJ.value("accepted", false)) {
             outError = "Transfer was declined by peer.";
+            ShowActionToast(L"AirDrop Declined: " + bareName, L"\xE711", RGB(239, 68, 68));
             return false;
+        } else {
+            ShowActionToast(L"AirDrop Accepted! Sending " + bareName, L"\xE73E", RGB(52, 199, 89));
         }
     } catch (...) {
         outError = "Invalid response from peer.";

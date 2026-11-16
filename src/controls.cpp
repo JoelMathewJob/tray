@@ -34,6 +34,7 @@ RECT g_tabControlsRect = {};
 RECT g_tabActionsRect = {};
 RECT g_tabMusicRect = {};
 RECT g_tabShareRect = {};
+RECT g_tabNotificationsRect = {};
 RECT g_settingsBtnRect = {};
 RECT g_brightnessCapsuleRect = {};
 RECT g_volumeCapsuleRect = {};
@@ -63,6 +64,7 @@ bool g_tabControlsHovered = false;
 bool g_tabActionsHovered = false;
 bool g_tabMusicHovered = false;
 bool g_tabShareHovered = false;
+bool g_tabNotificationsHovered = false;
 bool g_settingsHovered = false;
 bool g_wifiArrowHovered = false;
 bool g_btArrowHovered = false;
@@ -981,7 +983,7 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int startY = 24;
         int gap = 8;
 
-        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 1;
+        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 2;
         g_tabFilesRect = {barX, startY, barX + btnW, startY + btnH};
         g_tabControlsRect = {barX, startY + btnH + gap, barX + btnW, startY + (btnH + gap) * 2};
         g_tabActionsRect = {barX, startY + (btnH + gap) * 2, barX + btnW, startY + (btnH + gap) * 3};
@@ -995,6 +997,9 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             g_tabMusicRect = {0, 0, 0, 0};
 
         g_tabShareRect = {barX, startY + (btnH + gap) * vSlot, barX + btnW, startY + (btnH + gap) * (vSlot + 1)};
+        vSlot++;
+
+        g_tabNotificationsRect = {barX, startY + (btnH + gap) * vSlot, barX + btnW, startY + (btnH + gap) * (vSlot + 1)};
 
         int divY = startY + (btnH + gap) * tabCount + 6;
         int gearY = divY + 8;
@@ -1101,6 +1106,42 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             }
         }
 
+        // Notifications Tab
+        {
+            bool notifActive = (activeTab == TAB_NOTIFICATIONS);
+            COLORREF notifCol = notifActive ? textActive : (g_tabNotificationsHovered ? textHover : textInactive);
+            SetTextColor(hdc, notifCol);
+            DrawTextW(hdc, L"\xE7E7", -1, &g_tabNotificationsRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (notifActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(notifCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = isLeft ? (g_tabNotificationsRect.right + 2) : (g_tabNotificationsRect.left - 5);
+                int dotY = g_tabNotificationsRect.top + btnH / 2 - 2;
+                RoundRect(hdc, dotX, dotY, dotX + 3, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+
+            int pendingCount = GetPendingNotificationCount();
+            if (pendingCount > 0)
+            {
+                int badgeSize = 6;
+                int badgeX = isLeft ? (g_tabNotificationsRect.right - 8) : (g_tabNotificationsRect.left + 2);
+                int badgeY = g_tabNotificationsRect.top + 2;
+                HBRUSH badgeBr = CreateSolidBrush(RGB(239, 68, 68));
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, badgeBr);
+                SelectObject(hdc, noPen);
+                Ellipse(hdc, badgeX, badgeY, badgeX + badgeSize, badgeY + badgeSize);
+                DeleteObject(badgeBr);
+                DeleteObject(noPen);
+            }
+        }
+
         // Horizontal Divider in vertical bar
         HPEN divPen = CreatePen(PS_SOLID, 1, isDark ? RGB(65, 70, 85) : RGB(185, 195, 210));
         SelectObject(hdc, divPen);
@@ -1124,7 +1165,7 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int gap = 6;
         int divW = 12;
 
-        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 1;
+        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 2;
         int totalBarW = (btnW + gap) * tabCount + divW + gap + btnW;
         int startX = (width - totalBarW) / 2;
 
@@ -1141,6 +1182,9 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             g_tabMusicRect = {0, 0, 0, 0};
 
         g_tabShareRect = {startX + (btnW + gap) * hSlot, rowY, startX + (btnW + gap) * hSlot + btnW, rowY + btnH};
+        hSlot++;
+
+        g_tabNotificationsRect = {startX + (btnW + gap) * hSlot, rowY, startX + (btnW + gap) * hSlot + btnW, rowY + btnH};
 
         // Files Tab
         bool filesActive = (activeTab == TAB_FILES);
@@ -1238,6 +1282,42 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
                 int dotY = g_tabShareRect.bottom + 1;
                 RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
                 DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+        }
+
+        // Notifications Tab
+        {
+            bool notifActive = (activeTab == TAB_NOTIFICATIONS);
+            COLORREF notifCol = notifActive ? textActive : (g_tabNotificationsHovered ? textHover : textInactive);
+            SetTextColor(hdc, notifCol);
+            DrawTextW(hdc, L"\xE7E7", -1, &g_tabNotificationsRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (notifActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(notifCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = g_tabNotificationsRect.left + btnW / 2;
+                int dotY = g_tabNotificationsRect.bottom + 1;
+                RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+
+            int pendingCount = GetPendingNotificationCount();
+            if (pendingCount > 0)
+            {
+                int badgeSize = 6;
+                int badgeX = g_tabNotificationsRect.right - 7;
+                int badgeY = g_tabNotificationsRect.top + 2;
+                HBRUSH badgeBr = CreateSolidBrush(RGB(239, 68, 68));
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, badgeBr);
+                SelectObject(hdc, noPen);
+                Ellipse(hdc, badgeX, badgeY, badgeX + badgeSize, badgeY + badgeSize);
+                DeleteObject(badgeBr);
                 DeleteObject(noPen);
             }
         }

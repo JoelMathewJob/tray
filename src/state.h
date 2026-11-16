@@ -32,7 +32,8 @@ enum ActiveTab
     TAB_CONTROLS = 1,
     TAB_ACTIONS = 2,
     TAB_MUSIC = 3,
-    TAB_SHARE = 4
+    TAB_SHARE = 4,
+    TAB_NOTIFICATIONS = 5
 };
 
 enum CollapsedStyle
@@ -122,6 +123,34 @@ struct DiscoveredPeer
     int port = 8088;
     ULONGLONG lastSeenTick = 0;
 };
+
+enum class NotificationType {
+    AIRDROP_REQUEST,
+    INFO,
+    SUCCESS,
+    ERROR_MSG
+};
+
+struct NotificationItem {
+    std::string id;
+    NotificationType type = NotificationType::AIRDROP_REQUEST;
+    std::wstring senderName;
+    std::string senderIp;
+    int senderPort = 8088;
+    std::wstring fileName;
+    ULONGLONG fileSize = 0;
+    ULONGLONG timestamp = 0;
+    bool isPending = true;
+    bool isAccepted = false;
+    bool isDeclined = false;
+    std::wstring statusText;
+    std::shared_ptr<std::atomic<int>> decision; // 0 = pending, 1 = accepted, 2 = declined
+};
+
+extern std::vector<NotificationItem> g_notifications;
+extern std::mutex g_notificationsMutex;
+
+int GetPendingNotificationCount();
 
 struct FileTransferState {
     std::atomic<bool> isTransferring{false};
