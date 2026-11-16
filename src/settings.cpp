@@ -5,6 +5,7 @@
 #include "player.h"
 #include "updater.h"
 #include "blur.h"
+#include "network.h"
 #include <shellapi.h>
 #include <shlobj.h>
 #include <string>
@@ -86,6 +87,7 @@ static RECT s_movefilesToggleRect = {};
 // Tray Tab hit rects
 static RECT s_edgePillRects[3] = {};
 static RECT s_centerTrayBtnRect = {};
+static RECT s_airDropToggleRect = {};
 
 // Quick Controls Tab hit rects
 static RECT s_qcBrightnessToggleRect = {};
@@ -106,6 +108,8 @@ static RECT s_powerPillRects[3] = {};
 static RECT s_checkUpdatesBtnRect = {};
 static RECT s_openConfigBtnRect = {};
 static RECT s_resetDefaultsBtnRect = {};
+static RECT s_githubLinkRect = {};
+static bool s_githubLinkHovered = false;
 
 void InitSettingsPath()
 {
@@ -158,6 +162,7 @@ void LoadSettings()
     g_settings.playerVisualizerColor = GetPrivateProfileIntW(L"Player", L"VisualizerColor", 0, g_iniPath.c_str());
 
     // General / Network preferences
+    g_settings.enableAirDrop = GetPrivateProfileIntW(L"Network", L"EnableAirDrop", 1, g_iniPath.c_str()) == 1;
     wchar_t defCompName[MAX_COMPUTERNAME_LENGTH + 1] = {0};
     DWORD cLen = MAX_COMPUTERNAME_LENGTH + 1;
     GetComputerNameW(defCompName, &cLen);
@@ -173,6 +178,7 @@ void SaveSettings()
     if (g_iniPath.empty())
         return;
     WritePrivateProfileStringW(L"General", L"Username", g_settings.username.c_str(), g_iniPath.c_str());
+    WritePrivateProfileStringW(L"Network", L"EnableAirDrop", g_settings.enableAirDrop ? L"1" : L"0", g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"ThemeMode", std::to_wstring(g_settings.themeMode).c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"BackdropStyle", std::to_wstring(g_settings.backdropStyle).c_str(), g_iniPath.c_str());
     WritePrivateProfileStringW(L"UI", L"NotchStyle", std::to_wstring(g_settings.notchStyle).c_str(), g_iniPath.c_str());
@@ -628,7 +634,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
 
     HFONT searchIconFont = CreateClearTypeFont(12, FW_NORMAL, L"Segoe MDL2 Assets");
     oldF = SelectObject(memDC, searchIconFont);
-    SetTextColor(memDC, isDark ? RGB(140, 150, 170) : RGB(100, 110, 125));
+    SetTextColor(memDC, isDark ? RGB(140, 150, 170) : RGB(65, 75, 95));
     RECT sIconRc = {24, 50, 44, 82};
     DrawTextW(memDC, L"\xE721", -1, &sIconRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
@@ -638,7 +644,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
     RECT sTextRc = {46, 50, s_searchQuery.empty() ? 186 : 166, 82};
     if (s_searchQuery.empty())
     {
-        SetTextColor(memDC, isDark ? RGB(140, 150, 170) : RGB(120, 130, 145));
+        SetTextColor(memDC, isDark ? RGB(140, 150, 170) : RGB(80, 90, 110));
         DrawTextW(memDC, L"Search settings...", -1, &sTextRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         s_searchClearRect = {0, 0, 0, 0};
     }
@@ -721,7 +727,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
 
         SelectObject(memDC, tabIconFont);
         SetTextColor(memDC, isActive ? (isDark ? RGB(255, 255, 255) : RGB(18, 22, 32))
-                                     : (isDark ? RGB(150, 160, 178) : RGB(90, 100, 115)));
+                                     : (isDark ? RGB(150, 160, 178) : RGB(65, 75, 95)));
         RECT iRc = {s_tabRects[i].left + 12, s_tabRects[i].top, s_tabRects[i].left + 32, s_tabRects[i].bottom};
         DrawTextW(memDC, tabs[i].icon, -1, &iRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
@@ -744,7 +750,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
     }
     HFONT closeFont = CreateClearTypeFont(14, FW_NORMAL, L"Segoe MDL2 Assets");
     oldF = SelectObject(memDC, closeFont);
-    SetTextColor(memDC, s_closeHovered ? RGB(255, 255, 255) : (isDark ? RGB(160, 170, 185) : RGB(90, 100, 115)));
+    SetTextColor(memDC, s_closeHovered ? RGB(255, 255, 255) : (isDark ? RGB(160, 170, 185) : RGB(50, 60, 75)));
     DrawTextW(memDC, L"\xE8BB", -1, &s_closeBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     SelectObject(memDC, oldF);
     DeleteObject(closeFont);
@@ -766,7 +772,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
         DrawTextW(memDC, title, -1, &tRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         SelectObject(memDC, descFont);
-        SetTextColor(memDC, isDark ? RGB(145, 155, 175) : RGB(90, 100, 115));
+        SetTextColor(memDC, isDark ? RGB(145, 155, 175) : RGB(55, 65, 82));
         RECT dRc = {startX, y + 24, rightEdge - 280, y + 66};
         DrawTextW(memDC, desc, -1, &dRc, DT_WORDBREAK | DT_LEFT);
     };
@@ -780,7 +786,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
         int iconD = 28;
         RECT bRc = {r.left + 10, r.top + (r.bottom - r.top - iconD) / 2, r.left + 10 + iconD, r.top + (r.bottom - r.top + iconD) / 2};
         COLORREF badgeBg = isEnabled ? RGB(24, 120, 242) : (isDark ? RGB(40, 44, 56) : RGB(208, 216, 228));
-        COLORREF badgeCol = isEnabled ? RGB(255, 255, 255) : (isDark ? RGB(160, 170, 185) : RGB(70, 80, 95));
+        COLORREF badgeCol = isEnabled ? RGB(255, 255, 255) : (isDark ? RGB(160, 170, 185) : RGB(40, 50, 70));
         DrawRoundedRect(memDC, bRc, 14, badgeBg, badgeBg, 0);
 
         HFONT iFont = CreateClearTypeFont(14, FW_NORMAL, L"Segoe MDL2 Assets");
@@ -801,7 +807,7 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
 
         HFONT dFont = CreateClearTypeFont(10, FW_NORMAL, L"Segoe UI");
         HGDIOBJ od = SelectObject(memDC, dFont);
-        SetTextColor(memDC, isDark ? RGB(140, 150, 168) : RGB(95, 105, 120));
+        SetTextColor(memDC, isDark ? RGB(140, 150, 168) : RGB(55, 68, 88));
         RECT dRc = {r.left + 46, r.top + 24, r.right - 54, r.top + 42};
         DrawTextW(memDC, desc, -1, &dRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         SelectObject(memDC, od);
@@ -813,46 +819,44 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
 
     if (s_activeTab == STAB_APPEARANCE)
     {
-        // Live Preview Box
-        s_previewBoxRect = {startX, 44, rightEdge, 154};
-        DrawLivePreviewCard(memDC, s_previewBoxRect, s_previewOpen, isDark);
+        s_previewBoxRect = {0, 0, 0, 0};
 
         // Setting 1: Theme Mode
-        int y1 = 174;
+        int y1 = 44;
         drawRowHeader(y1, L"Theme", L"Select your color palette preference.");
         RECT tPillRc = {rightEdge - 270, y1 + 8, rightEdge, y1 + 40};
         std::vector<std::wstring> themeOpts = {L"System", L"Light", L"Dark"};
         DrawSegmentedPills(memDC, tPillRc, themeOpts, g_settings.themeMode, s_themePillRects, isDark);
 
         // Setting 2: Surface Glass
-        int y2 = 246;
+        int y2 = 114;
         drawRowHeader(y2, L"Surface", L"Liquid Glass blurs wallpaper; Tinted adds soft color.");
         RECT bPillRc = {rightEdge - 270, y2 + 8, rightEdge, y2 + 40};
         std::vector<std::wstring> backOpts = {L"Liquid Glass", L"Tinted Candy"};
         DrawSegmentedPills(memDC, bPillRc, backOpts, g_settings.backdropStyle, s_backdropPillRects, isDark);
 
         // Setting 3: Collapsed View Customization
-        int y3 = 318;
+        int y3 = 184;
         drawRowHeader(y3, L"Collapsed View", L"Resting dock appearance: grab line, clock, music bars, or dynamic HUD.");
         RECT cPillRc = {rightEdge - 340, y3 + 8, rightEdge, y3 + 40};
         std::vector<std::wstring> colOpts = {L"Pill", L"Clock", L"Equalizer", L"Dynamic"};
         DrawSegmentedPills(memDC, cPillRc, colOpts, g_settings.collapsedStyle, s_collapsedPillRects, isDark);
 
         // Setting 4: Notch Attachment
-        int y4 = 384;
+        int y4 = 250;
         drawRowHeader(y4, L"Notch Style", L"Attached sits on the screen bezel; Floating hovers.");
         RECT nPillRc = {rightEdge - 270, y4 + 8, rightEdge, y4 + 40};
         std::vector<std::wstring> notchOpts = {L"Attached", L"Floating"};
         DrawSegmentedPills(memDC, nPillRc, notchOpts, g_settings.notchStyle, s_notchPillRects, isDark);
 
         // Setting 5: Large Icons
-        int y5 = 446;
+        int y5 = 312;
         drawRowHeader(y5, L"Large Icons", L"Use 40px icon cards for high DPI displays.");
         s_largeIconsToggleRect = {rightEdge - 48, y5 + 12, rightEdge - 4, y5 + 36};
         DrawToggleSwitch(memDC, s_largeIconsToggleRect, g_settings.largeIcons, isDark);
 
         // Setting 6: Magnification
-        int y6 = 506;
+        int y6 = 372;
         drawRowHeader(y6, L"Cursor Magnification", L"Smooth dock zoom animation on item hover.");
         s_magnifyToggleRect = {rightEdge - 48, y6 + 12, rightEdge - 4, y6 + 36};
         DrawToggleSwitch(memDC, s_magnifyToggleRect, g_settings.enableMagnify, isDark);
@@ -1027,6 +1031,12 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
         drawRowHeader(y3, L"Center Tray", L"Reset tray position to the center of active screen.");
         s_centerTrayBtnRect = {rightEdge - 160, y3 + 8, rightEdge, y3 + 40};
         DrawModernActionBtn(memDC, s_centerTrayBtnRect, L"Center on Screen", isDark, L"\xE737");
+
+        // Setting 4: WinShare / AirDrop Service
+        int y4 = 272;
+        drawRowHeader(y4, L"WinShare / AirDrop Service", L"Background discovery & transfer server. Turn off to save battery & CPU.");
+        s_airDropToggleRect = {rightEdge - 48, y4 + 12, rightEdge - 4, y4 + 36};
+        DrawToggleSwitch(memDC, s_airDropToggleRect, g_settings.enableAirDrop, isDark);
     }
     else if (s_activeTab == STAB_CONTROLS)
     {
@@ -1091,29 +1101,57 @@ static void PaintSettingsWindow(HWND hwnd, HDC hdc)
     else if (s_activeTab == STAB_ABOUT)
     {
         int y1 = 44;
-        RECT idCardRc = {startX, y1, rightEdge, y1 + 104};
+        RECT idCardRc = {startX, y1, rightEdge, y1 + 130};
         DrawRoundedRect(memDC, idCardRc, 14, isDark ? RGB(28, 32, 42) : RGB(232, 238, 248), isDark ? RGB(50, 56, 72) : RGB(200, 212, 230), 1);
 
         HFONT logoBigFont = CreateClearTypeFont(20, FW_BOLD, L"Segoe UI");
         oldF = SelectObject(memDC, logoBigFont);
         SetTextColor(memDC, isDark ? RGB(255, 255, 255) : RGB(16, 20, 28));
-        RECT lRc = {startX + 20, y1 + 16, startX + 350, y1 + 42};
+        RECT lRc = {startX + 20, y1 + 14, startX + 350, y1 + 38};
         DrawTextW(memDC, L"WinTray", -1, &lRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
         SelectObject(memDC, oldF);
         DeleteObject(logoBigFont);
 
         HFONT vFont = CreateClearTypeFont(12, FW_NORMAL, L"Segoe UI");
+        HFONT bFont = CreateClearTypeFont(12, FW_BOLD, L"Segoe UI");
         oldF = SelectObject(memDC, vFont);
         SetTextColor(memDC, isDark ? RGB(150, 160, 180) : RGB(90, 100, 115));
-        RECT vRc = {startX + 20, y1 + 44, startX + 450, y1 + 62};
+        RECT vRc = {startX + 20, y1 + 40, startX + 450, y1 + 58};
         DrawTextW(memDC, L"Version 2.5 - Modern Windows Tray & Productivity Hub", -1, &vRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-        RECT cRc = {startX + 20, y1 + 64, startX + 480, y1 + 84};
-        DrawTextW(memDC, L"Hardware-accelerated acrylic glassmorphism, dynamic multi-edge dock, and customizable quick controls.", -1, &cRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+        RECT cRc = {startX + 20, y1 + 60, startX + 480, y1 + 78};
+        DrawTextW(memDC, L"Hardware-accelerated acrylic glassmorphism, dynamic multi-edge dock, and P2P AirDrop.", -1, &cRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        // Author: Joel Mathew Job
+        RECT authorRc = {startX + 20, y1 + 86, startX + 175, y1 + 108};
+        SelectObject(memDC, bFont);
+        SetTextColor(memDC, isDark ? RGB(230, 235, 248) : RGB(20, 26, 38));
+        DrawTextW(memDC, L"Author: Joel Mathew Job", -1, &authorRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        // Clickable GitHub Pill/Link
+        s_githubLinkRect = {startX + 185, y1 + 84, startX + 400, y1 + 110};
+        COLORREF ghBg = s_githubLinkHovered ? (isDark ? RGB(24, 60, 110) : RGB(215, 235, 255))
+                                            : (isDark ? RGB(22, 26, 36) : RGB(225, 232, 244));
+        COLORREF ghBorder = s_githubLinkHovered ? RGB(24, 120, 242) : (isDark ? RGB(50, 60, 80) : RGB(195, 205, 222));
+        DrawRoundedRect(memDC, s_githubLinkRect, 6, ghBg, ghBorder, 1);
+
+        HFONT gitIconFont = CreateClearTypeFont(12, FW_NORMAL, L"Segoe Fluent Icons");
+        SelectObject(memDC, gitIconFont);
+        SetTextColor(memDC, s_githubLinkHovered ? RGB(0, 160, 255) : (isDark ? RGB(110, 185, 255) : RGB(0, 100, 210)));
+        RECT gIconRc = {s_githubLinkRect.left + 8, s_githubLinkRect.top, s_githubLinkRect.left + 24, s_githubLinkRect.bottom};
+        DrawTextW(memDC, L"\xE71B", -1, &gIconRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        DeleteObject(gitIconFont);
+
+        SelectObject(memDC, bFont);
+        SetTextColor(memDC, s_githubLinkHovered ? RGB(0, 160, 255) : (isDark ? RGB(110, 185, 255) : RGB(0, 100, 210)));
+        RECT gTextRc = {s_githubLinkRect.left + 26, s_githubLinkRect.top, s_githubLinkRect.right - 8, s_githubLinkRect.bottom};
+        DrawTextW(memDC, L"github.com/JoelMathewJob", -1, &gTextRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
         SelectObject(memDC, oldF);
         DeleteObject(vFont);
+        DeleteObject(bFont);
 
-        int y2 = 176;
+        int y2 = y1 + 144;
         s_checkUpdatesBtnRect = {startX, y2, startX + 160, y2 + 38};
         DrawModernActionBtn(memDC, s_checkUpdatesBtnRect, L"Check for Updates", isDark, L"\xE895");
 
@@ -1377,6 +1415,13 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             needRedraw = true;
         }
 
+        bool newGhHov = (s_activeTab == STAB_ABOUT && PtInRect(&s_githubLinkRect, pt));
+        if (newGhHov != s_githubLinkHovered)
+        {
+            s_githubLinkHovered = newGhHov;
+            needRedraw = true;
+        }
+
         if (needRedraw)
             InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
@@ -1384,13 +1429,30 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     case WM_MOUSELEAVE:
     {
-        if (s_hoveredTab != -1 || s_closeHovered)
+        if (s_hoveredTab != -1 || s_closeHovered || s_githubLinkHovered)
         {
             s_hoveredTab = -1;
             s_closeHovered = false;
+            s_githubLinkHovered = false;
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
+    }
+
+    case WM_SETCURSOR:
+    {
+        if (LOWORD(lParam) == HTCLIENT)
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            if (s_activeTab == STAB_ABOUT && PtInRect(&s_githubLinkRect, pt))
+            {
+                SetCursor(LoadCursor(nullptr, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
     }
 
     case WM_LBUTTONDOWN:
@@ -1784,6 +1846,21 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
+
+            if (PtInRect(&s_airDropToggleRect, pt))
+            {
+                g_settings.enableAirDrop = !g_settings.enableAirDrop;
+                SaveSettings();
+                if (g_settings.enableAirDrop) {
+                    NetworkManager::Instance().Start();
+                    NetworkManager::Instance().TriggerQuickScan();
+                } else {
+                    NetworkManager::Instance().Stop();
+                }
+                if (g_mainHwnd && IsWindow(g_mainHwnd)) InvalidateRect(g_mainHwnd, nullptr, FALSE);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
         }
         else if (s_activeTab == STAB_CONTROLS)
         {
@@ -1871,6 +1948,12 @@ LRESULT CALLBACK SettingsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         else if (s_activeTab == STAB_ABOUT)
         {
+            if (PtInRect(&s_githubLinkRect, pt))
+            {
+                ShellExecuteW(nullptr, L"open", L"https://github.com/JoelMathewJob", nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+
             if (PtInRect(&s_checkUpdatesBtnRect, pt))
             {
                 CheckForUpdates(hwnd);

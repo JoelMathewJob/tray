@@ -60,6 +60,8 @@ set(SOURCES
     src/network.cpp
     src/share_ui.h
     src/share_ui.cpp
+    src/notifications_ui.h
+    src/notifications_ui.cpp
     include/qrcodegen.hpp
     include/qrcodegen.cpp
     include/httplib.h

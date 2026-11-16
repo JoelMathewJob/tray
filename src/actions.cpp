@@ -754,24 +754,159 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
             RECT timerRc = {0, height - 34, width, height - 10};
             DrawTextW(hdc, durStr.c_str(), -1, &timerRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-            SelectObject(hdc, oldF);
-            DeleteObject(timerFont);
-            DeleteObject(recFont);
-        }
-        return;
+        SelectObject(hdc, oldF);
+        DeleteObject(timerFont);
+        DeleteObject(recFont);
     }
+    return;
+}
 
-    // 2. Normal Collapsed View Modes
-    int style = g_settings.collapsedStyle;
-    float peak = GetSystemAudioPeak();
+// 2. High Priority: Pending Transfer / Notification Alert HUD
+int pendingNotifs = GetPendingNotificationCount();
+if (pendingNotifs > 0)
+{
+    ULONGLONG now = GetTickCount64();
+    // Ringing bell wobble oscillation
+    float wobble = sinf(static_cast<float>(now) * 0.024f);
+    int bellShiftX = static_cast<int>(wobble * 2.5f);
+    bool dotBlink = ((now / 350) % 2 == 0);
 
-    if (style == COLLAPSED_DYNAMIC)
+    if (!isVert)
     {
-        if (peak > 0.005f || g_media.isPlaying || g_media.hasActiveSession)
-            style = COLLAPSED_AUDIO;
-        else
-            style = COLLAPSED_TIME;
+        // Horizontal Notification Alert HUD
+        // Animated Bell on left
+        HFONT bellFont = CreateClearTypeFont(13, FW_BOLD, L"Segoe Fluent Icons");
+        HGDIOBJ oldF = SelectObject(hdc, bellFont);
+        SetTextColor(hdc, RGB(245, 158, 11)); // Amber gold ringing bell
+        RECT bellRc = {12 + bellShiftX, 0, 32 + bellShiftX, height};
+        DrawTextW(hdc, L"\xE7E7", -1, &bellRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Pulsing Red Dot beside bell
+        int dotX = 33;
+        int dotY = (height / 2) - 4;
+        int dotR = 3;
+        COLORREF dotCol = dotBlink ? RGB(239, 68, 68) : RGB(180, 30, 30);
+        HBRUSH dotBr = CreateSolidBrush(dotCol);
+        HPEN noP = CreatePen(PS_NULL, 0, 0);
+        HGDIOBJ oldB = SelectObject(hdc, dotBr);
+        HGDIOBJ oldP = SelectObject(hdc, noP);
+        RoundRect(hdc, dotX - dotR, dotY - dotR, dotX + dotR, dotY + dotR, dotR * 2, dotR * 2);
+        DeleteObject(dotBr);
+        DeleteObject(noP);
+
+        // "New notification" text
+        HFONT textFont = CreateClearTypeFont(11, FW_BOLD, L"Segoe UI");
+        SelectObject(hdc, textFont);
+        SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(20, 24, 32));
+        RECT textRc = {40, 0, width - 60, height};
+        std::wstring notifLabel = (pendingNotifs > 1) 
+            ? (L"New notifications (" + std::to_wstring(pendingNotifs) + L")")
+            : L"New notification";
+        DrawTextW(hdc, notifLabel.c_str(), -1, &textRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        // Expiry countdown on right side
+        int remSec = 60;
+        {
+            std::lock_guard<std::mutex> lock(g_notificationsMutex);
+            for (const auto& item : g_notifications) {
+                if (item.isPending && item.expiresAt > now) {
+                    remSec = static_cast<int>((item.expiresAt - now) / 1000);
+                    break;
+                }
+            }
+        }
+        HFONT timerFont = CreateClearTypeFont(10, FW_SEMIBOLD, L"Segoe UI");
+        SelectObject(hdc, timerFont);
+        SetTextColor(hdc, (remSec <= 15) ? RGB(239, 68, 68) : (isDark ? RGB(245, 158, 11) : RGB(180, 100, 0)));
+        RECT timerRc = {width - 55, 0, width - 12, height};
+        std::wstring tStr = std::to_wstring(remSec) + L"s";
+        DrawTextW(hdc, tStr.c_str(), -1, &timerRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+
+        SelectObject(hdc, oldF);
+        SelectObject(hdc, oldB);
+        SelectObject(hdc, oldP);
+        DeleteObject(bellFont);
+        DeleteObject(textFont);
+        DeleteObject(timerFont);
     }
+    else
+    {
+        // Vertical Notification Alert HUD
+        // Animated Bell at top
+        int bellCenter = width / 2;
+        HFONT bellFont = CreateClearTypeFont(13, FW_BOLD, L"Segoe Fluent Icons");
+        HGDIOBJ oldF = SelectObject(hdc, bellFont);
+        SetTextColor(hdc, RGB(245, 158, 11));
+        RECT bellRc = {0 + bellShiftX, 10, width + bellShiftX, 28};
+        DrawTextW(hdc, L"\xE7E7", -1, &bellRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Pulsing dot at top corner of bell
+        int dotX = bellCenter + 8;
+        int dotY = 12;
+        int dotR = 3;
+        COLORREF dotCol = dotBlink ? RGB(239, 68, 68) : RGB(180, 30, 30);
+        HBRUSH dotBr = CreateSolidBrush(dotCol);
+        HPEN noP = CreatePen(PS_NULL, 0, 0);
+        HGDIOBJ oldB = SelectObject(hdc, dotBr);
+        HGDIOBJ oldP = SelectObject(hdc, noP);
+        RoundRect(hdc, dotX - dotR, dotY - dotR, dotX + dotR, dotY + dotR, dotR * 2, dotR * 2);
+        DeleteObject(dotBr);
+        DeleteObject(noP);
+
+        // "NEW" text
+        HFONT newFont = CreateClearTypeFont(9, FW_BOLD, L"Segoe UI");
+        SelectObject(hdc, newFont);
+        SetTextColor(hdc, RGB(239, 68, 68));
+        RECT newRc = {0, 30, width, 44};
+        DrawTextW(hdc, L"NEW", -1, &newRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // "NOTIF" text
+        HFONT notifFont = CreateClearTypeFont(8, FW_BOLD, L"Segoe UI");
+        SelectObject(hdc, notifFont);
+        SetTextColor(hdc, isDark ? RGB(240, 245, 255) : RGB(20, 24, 32));
+        RECT notifRc = {0, 44, width, 58};
+        DrawTextW(hdc, L"NOTIF", -1, &notifRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Expiry timer at bottom
+        int remSec = 60;
+        {
+            std::lock_guard<std::mutex> lock(g_notificationsMutex);
+            for (const auto& item : g_notifications) {
+                if (item.isPending && item.expiresAt > now) {
+                    remSec = static_cast<int>((item.expiresAt - now) / 1000);
+                    break;
+                }
+            }
+        }
+        HFONT timerFont = CreateClearTypeFont(9, FW_SEMIBOLD, L"Segoe UI");
+        SelectObject(hdc, timerFont);
+        SetTextColor(hdc, (remSec <= 15) ? RGB(239, 68, 68) : (isDark ? RGB(245, 158, 11) : RGB(180, 100, 0)));
+        RECT timerRc = {0, height - 26, width, height - 10};
+        std::wstring tStr = std::to_wstring(remSec) + L"s";
+        DrawTextW(hdc, tStr.c_str(), -1, &timerRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        SelectObject(hdc, oldF);
+        SelectObject(hdc, oldB);
+        SelectObject(hdc, oldP);
+        DeleteObject(bellFont);
+        DeleteObject(newFont);
+        DeleteObject(notifFont);
+        DeleteObject(timerFont);
+    }
+    return;
+}
+
+// 3. Normal Collapsed View Modes
+int style = g_settings.collapsedStyle;
+float peak = GetSystemAudioPeak();
+
+if (style == COLLAPSED_DYNAMIC)
+{
+    if (g_media.hasActiveSession && g_media.isPlaying)
+        style = COLLAPSED_AUDIO;
+    else
+        style = COLLAPSED_TIME;
+}
 
     if (style == COLLAPSED_TIME)
     {
@@ -796,7 +931,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
             int pillH = 3;
             int pillX = (width - pillW) / 2;
             int pillY = (height - pillH) / 2;
-            COLORREF cLine = isDark ? RGB(75, 82, 100) : RGB(160, 170, 185);
+            COLORREF cLine = isDark ? RGB(75, 82, 100) : RGB(130, 140, 158);
             HBRUSH lBr = CreateSolidBrush(cLine);
             HPEN noP = CreatePen(PS_NULL, 0, 0);
             SelectObject(hdc, lBr);
@@ -807,7 +942,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
 
             HFONT dateFont = CreateClearTypeFont(10, FW_NORMAL, L"Segoe UI");
             SelectObject(hdc, dateFont);
-            SetTextColor(hdc, isDark ? RGB(140, 150, 170) : RGB(100, 110, 125));
+            SetTextColor(hdc, isDark ? RGB(140, 150, 170) : RGB(50, 60, 78));
             RECT dateRc = {width - 75, 0, width - 14, height};
             DrawTextW(hdc, dateBuf, -1, &dateRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
@@ -827,7 +962,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
             int pillH = 26;
             int pillX = (width - pillW) / 2;
             int pillY = (height - pillH) / 2;
-            COLORREF cLine = isDark ? RGB(75, 82, 100) : RGB(160, 170, 185);
+            COLORREF cLine = isDark ? RGB(75, 82, 100) : RGB(130, 140, 158);
             HBRUSH lBr = CreateSolidBrush(cLine);
             HPEN noP = CreatePen(PS_NULL, 0, 0);
             SelectObject(hdc, lBr);
@@ -843,7 +978,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
     else if (style == COLLAPSED_AUDIO)
     {
         ULONGLONG t = GetTickCount64();
-        bool isPlaying = (peak > 0.005f || g_media.isPlaying);
+        bool isPlaying = (g_media.hasActiveSession && g_media.isPlaying);
         COLORREF accentCol = GetVisualizerAccentColor(g_settings.playerVisualizerColor);
 
         if (!isVert)
@@ -857,7 +992,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
             {
                 HFONT noteFont = CreateClearTypeFont(12, FW_NORMAL, L"Segoe MDL2 Assets");
                 HGDIOBJ oldF = SelectObject(hdc, noteFont);
-                SetTextColor(hdc, isPlaying ? accentCol : (isDark ? RGB(140, 150, 170) : RGB(100, 110, 125)));
+                SetTextColor(hdc, isPlaying ? accentCol : (isDark ? RGB(140, 150, 170) : RGB(50, 60, 78)));
                 RECT noteRc = {14, 0, 34, height};
                 DrawTextW(hdc, L"\xE8D6", -1, &noteRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
                 SelectObject(hdc, oldF);
@@ -869,7 +1004,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
             int pillH = 3;
             int pillX = (width - pillW) / 2;
             int pillY = (height - pillH) / 2;
-            COLORREF cLine = isDark ? RGB(75, 82, 100) : RGB(160, 170, 185);
+            COLORREF cLine = isDark ? RGB(75, 82, 100) : RGB(130, 140, 158);
             HBRUSH lBr = CreateSolidBrush(cLine);
             HPEN noP = CreatePen(PS_NULL, 0, 0);
             HGDIOBJ oldB = SelectObject(hdc, lBr);
@@ -897,7 +1032,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
 
                     COLORREF barCol = isPlaying
                                           ? accentCol
-                                          : (isDark ? RGB(75, 82, 100) : RGB(160, 170, 185));
+                                          : (isDark ? RGB(75, 82, 100) : RGB(130, 140, 158));
                     HBRUSH bBr = CreateSolidBrush(barCol);
                     SelectObject(hdc, bBr);
                     RoundRect(hdc, bX, bY, bX + barW, bY + bH, 2, 2);
@@ -936,7 +1071,7 @@ void RenderCollapsedDockContent(HDC hdc, int width, int height, bool isDark, boo
                     int bX = (width - bW) / 2;
                     int bY = startY + b * (barH + barGap);
 
-                    COLORREF barCol = isPlaying ? accentCol : (isDark ? RGB(75, 82, 100) : RGB(160, 170, 185));
+                    COLORREF barCol = isPlaying ? accentCol : (isDark ? RGB(75, 82, 100) : RGB(130, 140, 158));
                     HBRUSH bBr = CreateSolidBrush(barCol);
                     HGDIOBJ oldB = SelectObject(hdc, bBr);
                     RoundRect(hdc, bX, bY, bX + bW, bY + barH, 2, 2);
@@ -990,7 +1125,7 @@ void RenderActionsTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
     COLORREF defaultTileBg = isDark ? RGB(26, 30, 40) : RGB(232, 238, 246);
     COLORREF defaultTileBorder = isDark ? RGB(45, 52, 68) : RGB(205, 215, 230);
     COLORREF textCol = isDark ? RGB(255, 255, 255) : RGB(18, 22, 32);
-    COLORREF subCol = isDark ? RGB(140, 150, 170) : RGB(95, 105, 120);
+    COLORREF subCol = isDark ? RGB(140, 150, 170) : RGB(55, 68, 88);
 
     // =============================================================
     // ROW 1: 3 CORE BUTTONS (Record, Snip, Screenshot)

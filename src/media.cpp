@@ -689,7 +689,12 @@ public:
     {
         if (!pdwEffect) return E_POINTER;
         *pdwEffect = DROPEFFECT_COPY;
+        g_activeTab = TAB_FILES; // Task-based: dragging files automatically expands and switches to Files/Tray tab
         TriggerExpand(m_hwnd);
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            CalculateTargetSize(true);
+            InvalidateRect(m_hwnd, nullptr, TRUE);
+        }
         return S_OK;
     }
 
@@ -697,6 +702,13 @@ public:
     {
         if (!pdwEffect) return E_POINTER;
         *pdwEffect = DROPEFFECT_COPY;
+        if (g_activeTab != TAB_FILES) {
+            g_activeTab = TAB_FILES;
+            CalculateTargetSize(true);
+            if (m_hwnd && IsWindow(m_hwnd)) {
+                InvalidateRect(m_hwnd, nullptr, TRUE);
+            }
+        }
         return S_OK;
     }
 

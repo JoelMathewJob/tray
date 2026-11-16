@@ -1,6 +1,7 @@
 #include "share_ui.h"
 #include "state.h"
 #include "network.h"
+#include "settings.h"
 #include "blur.h"
 #include <qrcodegen.hpp>
 #include <commdlg.h>
@@ -9,22 +10,46 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <algorithm>
+
+static inline int ClampInt(int val, int low, int high) {
+    return (val < low) ? low : (val > high ? high : val);
+}
 
 static HWND s_shareHwnd = nullptr;
-static std::wstring s_activeFilePath = L"";
+static std::vector<std::wstring> s_activeFilePaths;
 static std::wstring s_statusMessage = L"Ready to share";
 static bool s_isTransferring = false;
 
-// Radar animation
+// Source picker popup state
+static bool s_showSourcePicker = false;
+static DiscoveredPeer s_chosenPeer = {};
+
+// Expiration / Retry state
+static bool s_isExpiredFailure = false;
+static DiscoveredPeer s_lastFailedPeer = {};
+static std::vector<std::wstring> s_lastFailedFiles;
+
+// Radar animation & interaction
 static float s_sonarRadius = 0.0f;
 static int s_hoveredPeerIndex = -1;
-static bool s_browseHovered = false;
 static bool s_copyLinkHovered = false;
+static bool s_fromTrayHovered = false;
+static bool s_fromComputerHovered = false;
+static bool s_closePickerHovered = false;
+static bool s_sendAgainHovered = false;
 
 // Hit test rectangles
-static RECT s_browseRect = {};
-static RECT s_copyLinkRect = {};
+static RECT s_copyLinkRect = {0, 0, 0, 0};
 static std::vector<RECT> s_peerNodeRects;
+static RECT s_fromTrayRect = {0, 0, 0, 0};
+static RECT s_fromComputerRect = {0, 0, 0, 0};
+static RECT s_closePickerRect = {0, 0, 0, 0};
+static RECT s_sendAgainRect = {0, 0, 0, 0};
+static RECT s_serviceToggleRect = {0, 0, 0, 0};
+static RECT s_enableServiceBtnRect = {0, 0, 0, 0};
+static bool s_serviceToggleHovered = false;
+static bool s_enableServiceBtnHovered = false;
 
 // QR Code generation cache
 static std::string s_cachedQrUrl = "";
@@ -77,25 +102,146 @@ static std::wstring GetFileNameOnly(const std::wstring& path)
 
 void SetShareActiveFile(const std::wstring& path)
 {
-    s_activeFilePath = path;
-    if (path.empty())
+    s_showSourcePicker = false;
+    s_isExpiredFailure = false;
+    s_lastFailedFiles.clear();
+    if (path.empty()) {
+        s_activeFilePaths.clear();
         s_statusMessage = L"Ready to share";
-    else
+    } else {
+        s_activeFilePaths = {path};
         s_statusMessage = L"File ready: " + GetFileNameOnly(path);
+    }
 }
 
 int GetShareTabDesiredWidth(int dockEdge)
 {
     if (dockEdge == EDGE_LEFT || dockEdge == EDGE_RIGHT)
-        return 280;
-    return 590;
+        return 320;
+    return 600;
 }
 
 int GetShareTabDesiredHeight(int dockEdge)
 {
     if (dockEdge == EDGE_LEFT || dockEdge == EDGE_RIGHT)
         return 580;
-    return 306;
+    return 310;
+}
+
+static std::vector<std::wstring> PickFilesFromComputer(HWND hwnd)
+{
+    std::vector<std::wstring> result;
+    std::vector<wchar_t> buffer(32768, 0);
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = hwnd;
+    ofn.lpstrFile = buffer.data();
+    ofn.nMaxFile = static_cast<DWORD>(buffer.size());
+    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
+    ofn.nFilterIndex = 1;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+
+    if (GetOpenFileNameW(&ofn)) {
+        const wchar_t* p = buffer.data();
+        std::wstring dir = p;
+        p += dir.length() + 1;
+        if (*p == L'\0') {
+            // Single file selected
+            result.push_back(dir);
+        } else {
+            // Multiple files selected
+            while (*p != L'\0') {
+                std::wstring fname = p;
+                std::wstring fullPath = dir;
+                if (!fullPath.empty() && fullPath.back() != L'\\') fullPath += L'\\';
+                fullPath += fname;
+                result.push_back(fullPath);
+                p += fname.length() + 1;
+            }
+        }
+    }
+    return result;
+}
+
+static void StartSendFiles(HWND hwnd, DiscoveredPeer targetPeer, const std::vector<std::wstring>& filePaths)
+{
+    if (filePaths.empty()) return;
+
+    s_isTransferring = true;
+    s_isExpiredFailure = false;
+    s_lastFailedFiles.clear();
+
+    std::wstring dispName = GetFileNameOnly(filePaths[0]);
+    if (filePaths.size() > 1) {
+        dispName += L" (+" + std::to_wstring(filePaths.size() - 1) + L" files)";
+    }
+    s_statusMessage = L"Requesting transfer to " + targetPeer.name + L"...";
+    if (IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
+
+    std::thread([hwnd, targetPeer, filePaths, dispName]() {
+        std::string err;
+        bool expired = false;
+        bool ok = NetworkManager::Instance().SendFilesToPeer(targetPeer.ip, filePaths, err, expired, targetPeer.port);
+        s_isTransferring = false;
+        if (ok) {
+            s_statusMessage = L"Transfer to " + targetPeer.name + L" completed successfully!";
+            s_isExpiredFailure = false;
+            s_lastFailedFiles.clear();
+            s_activeFilePaths.clear();
+        } else {
+            if (expired) {
+                s_isExpiredFailure = true;
+                s_lastFailedPeer = targetPeer;
+                s_lastFailedFiles = filePaths;
+                s_statusMessage = L"Transfer expired: " + targetPeer.name + L" did not respond.";
+            } else {
+                std::wstring wErr(err.begin(), err.end());
+                s_statusMessage = L"Transfer failed: " + wErr;
+                s_isExpiredFailure = false;
+                s_lastFailedFiles.clear();
+            }
+            s_activeFilePaths.clear();
+        }
+        if (IsWindow(hwnd)) {
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+    }).detach();
+}
+
+static void DrawStandbyShareView(HDC hdc, int left, int top, int right, int bottom, bool isDark, bool isVert, HFONT titleFont, HFONT secFont, HFONT iconFont)
+{
+    int centerY = top + (bottom - top) / 2 - 12;
+    int centerX = left + (right - left) / 2;
+
+    int badgeD = 44;
+    RECT badgeRc = {centerX - badgeD / 2, centerY - 52, centerX + badgeD / 2, centerY - 52 + badgeD};
+    COLORREF badgeBg = isDark ? RGB(32, 38, 52) : RGB(225, 233, 246);
+    COLORREF badgeBorder = isDark ? RGB(55, 65, 85) : RGB(195, 208, 226);
+    DrawRoundedRect(hdc, badgeRc, badgeD / 2, badgeBg, badgeBorder, 1);
+
+    SelectObject(hdc, iconFont);
+    SetTextColor(hdc, isDark ? RGB(140, 155, 180) : RGB(70, 85, 110));
+    DrawTextW(hdc, L"\xE704", -1, &badgeRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    RECT tRc = {left + 8, centerY, right - 8, centerY + 22};
+    SelectObject(hdc, titleFont);
+    SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(18, 22, 32));
+    DrawTextW(hdc, L"WinShare is Turned Off", -1, &tRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    RECT sRc = {left + 14, centerY + 24, right - 14, centerY + 58};
+    SelectObject(hdc, secFont);
+    SetTextColor(hdc, isDark ? RGB(145, 155, 175) : RGB(65, 78, 98));
+    DrawTextW(hdc, isVert ? L"Background peer discovery is stopped to save battery." : L"Background discovery & transfer server are stopped to eliminate background CPU and battery usage.", -1, &sRc, DT_WORDBREAK | DT_CENTER);
+
+    int btnW = isVert ? 144 : 168;
+    int btnH = 30;
+    s_enableServiceBtnRect = {centerX - btnW / 2, centerY + 66, centerX + btnW / 2, centerY + 66 + btnH};
+    COLORREF btnBg = s_enableServiceBtnHovered ? RGB(5, 150, 105) : RGB(16, 185, 129);
+    DrawRoundedRect(hdc, s_enableServiceBtnRect, 8, btnBg, btnBg, 0);
+
+    SelectObject(hdc, titleFont);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    DrawTextW(hdc, L"\x26A1 Turn On WinShare", -1, &s_enableServiceBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 }
 
 void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
@@ -117,9 +263,11 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
     }
 
     HFONT iconFont = CreateClearTypeFont(15, FW_NORMAL, L"Segoe MDL2 Assets");
+    HFONT fluentIconFont = CreateClearTypeFont(14, FW_NORMAL, L"Segoe Fluent Icons");
     HFONT titleFont = CreateClearTypeFont(13, FW_BOLD, L"Segoe UI");
     HFONT secFont = CreateClearTypeFont(11, FW_NORMAL, L"Segoe UI");
     HFONT boldSecFont = CreateClearTypeFont(11, FW_BOLD, L"Segoe UI");
+    HFONT smallFont = CreateClearTypeFont(10, FW_NORMAL, L"Segoe UI");
     HGDIOBJ oldF = SelectObject(hdc, titleFont);
     SetBkMode(hdc, TRANSPARENT);
 
@@ -130,6 +278,8 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
 
     EnsureQrCached(qrUrl);
 
+    bool isSvcRunning = g_settings.enableAirDrop && NetworkManager::Instance().IsRunning();
+
     if (!isVert)
     {
         // ==========================================
@@ -137,6 +287,32 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         // ==========================================
         int contentTop = 38;
         int contentBottom = height - 12;
+
+        // Service Toggle Pill at Top-Right
+        s_serviceToggleRect = {width - 76, contentTop + 1, width - 14, contentTop + 21};
+        COLORREF togBg = isSvcRunning ? (isDark ? RGB(16, 60, 40) : RGB(220, 248, 232))
+                                      : (isDark ? RGB(36, 42, 54) : RGB(225, 232, 244));
+        COLORREF togBorder = isSvcRunning ? RGB(16, 185, 129)
+                                          : (isDark ? RGB(65, 75, 95) : RGB(180, 195, 215));
+        COLORREF togText = isSvcRunning ? (isDark ? RGB(52, 211, 153) : RGB(5, 150, 105))
+                                        : (isDark ? RGB(160, 170, 188) : RGB(70, 80, 100));
+        DrawRoundedRect(hdc, s_serviceToggleRect, 6, togBg, togBorder, 1);
+        SelectObject(hdc, smallFont);
+        SetTextColor(hdc, togText);
+        DrawTextW(hdc, isSvcRunning ? L"● ON" : L"○ OFF", -1, &s_serviceToggleRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        if (!isSvcRunning)
+        {
+            DrawStandbyShareView(hdc, 14, contentTop + 20, width - 14, contentBottom, isDark, false, titleFont, secFont, iconFont);
+            RestoreDC(hdc, savedDC);
+            DeleteObject(iconFont);
+            DeleteObject(fluentIconFont);
+            DeleteObject(titleFont);
+            DeleteObject(secFont);
+            DeleteObject(boldSecFont);
+            DeleteObject(smallFont);
+            return;
+        }
 
         // --- LEFT PANE: Mobile Connect (QR Code) ---
         int leftCardW = 236;
@@ -147,7 +323,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         DrawTextW(hdc, L"Mobile Connect", -1, &qrTitleRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         SelectObject(hdc, secFont);
-        SetTextColor(hdc, isDark ? RGB(150, 160, 180) : RGB(100, 110, 125));
+        SetTextColor(hdc, isDark ? RGB(150, 160, 180) : RGB(55, 68, 88));
         RECT qrSubRc = {leftCardRc.left + 4, leftCardRc.top + 20, leftCardRc.right - 4, leftCardRc.top + 34};
         DrawTextW(hdc, L"Scan with phone camera to share", -1, &qrSubRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
@@ -199,12 +375,12 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         // Network hint note
         RECT hintRc = {leftCardRc.left + 2, linkY + 23, leftCardRc.right - 2, linkY + 36};
         SelectObject(hdc, secFont);
-        SetTextColor(hdc, isDark ? RGB(110, 122, 145) : RGB(140, 150, 168));
+        SetTextColor(hdc, isDark ? RGB(110, 122, 145) : RGB(65, 75, 95));
         DrawTextW(hdc, L"Same Wi-Fi (Set PC to Private Network)", -1, &hintRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         // --- VERTICAL DIVIDER ---
         int divX = leftCardRc.right + 10;
-        COLORREF divCol = isDark ? RGB(45, 52, 68) : RGB(210, 218, 230);
+        COLORREF divCol = isDark ? RGB(45, 52, 68) : RGB(190, 202, 218);
         HPEN divPen = CreatePen(PS_SOLID, 1, divCol);
         HGDIOBJ oldP = SelectObject(hdc, divPen);
         MoveToEx(hdc, divX, contentTop + 8, nullptr);
@@ -214,7 +390,8 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
 
         // --- RIGHT PANE: Sonar Radar & Discovered PCs ---
         int rightLeft = divX + 12;
-        int rightWidth = width - rightLeft - 14;
+        int rightRight = width - 14;
+        int rightWidth = rightRight - rightLeft;
 
         if (rightWidth > 60 && contentBottom > contentTop + 80)
         {
@@ -223,26 +400,27 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
             RECT radarTitleRc = {rightLeft + 4, contentTop + 2, rightLeft + 160, contentTop + 20};
             DrawTextW(hdc, L"Local Wi-Fi Radar", -1, &radarTitleRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-            // Radar center
-            int radarCenterX = rightLeft + rightWidth / 2;
-            int radarCenterY = contentTop + 95;
+            int bottomY = contentBottom - 36;
+            // Radar center perfectly centered in right pane
+            int radarCenterX = (rightLeft + rightRight) / 2;
+            int radarCenterY = (contentTop + 26 + bottomY) / 2;
 
-            // 3 Concentric circles
+            // 3 Concentric circles (enlarged for pretty layout)
             COLORREF ringCol = isDark ? RGB(32, 44, 62) : RGB(210, 222, 238);
             HPEN ringPen = CreatePen(PS_SOLID, 1, ringCol);
             oldP = SelectObject(hdc, ringPen);
             HGDIOBJ oldB = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            for (int r : {22, 44, 66}) {
+            for (int r : {26, 54, 82}) {
                 Ellipse(hdc, radarCenterX - r, radarCenterY - r, radarCenterX + r, radarCenterY + r);
             }
 
-            // Animated continuous sonar wave ripples based on wall-clock time
+            // Animated continuous sonar wave ripples
             ULONGLONG nowTick = GetTickCount64();
             for (int offset : {0, 1100}) {
                 float pNorm = static_cast<float>((nowTick + offset) % 2200) / 2200.0f;
-                int pulseR = static_cast<int>(6.0f + pNorm * 62.0f);
-                if (pulseR > 6 && pulseR < 70) {
+                int pulseR = static_cast<int>(8.0f + pNorm * 74.0f);
+                if (pulseR > 8 && pulseR < 84) {
                     COLORREF pulseCol = isDark ? (pNorm < 0.6f ? RGB(0, 150, 245) : RGB(0, 100, 180))
                                                : (pNorm < 0.6f ? RGB(30, 140, 235) : RGB(100, 180, 245));
                     HPEN pulsePen = CreatePen(PS_SOLID, pNorm < 0.5f ? 2 : 1, pulseCol);
@@ -265,12 +443,17 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
             SetTextColor(hdc, RGB(255, 255, 255));
             DrawTextW(hdc, L"\xE7F8", -1, &centerRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-            RECT youRc = {radarCenterX - 50, radarCenterY + 16, radarCenterX + 50, radarCenterY + 30};
-            SelectObject(hdc, secFont);
-            SetTextColor(hdc, isDark ? RGB(180, 195, 220) : RGB(70, 80, 100));
             std::wstring myName = g_settings.username;
             if (myName.empty()) myName = L"You";
-            DrawTextW(hdc, (myName + L" (You)").c_str(), -1, &youRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            std::wstring myLabel = myName + L" (You)";
+            SelectObject(hdc, secFont);
+            SIZE myTextSz = {};
+            GetTextExtentPoint32W(hdc, myLabel.c_str(), static_cast<int>(myLabel.size()), &myTextSz);
+            int myPillHalf = ClampInt(static_cast<int>(myTextSz.cx / 2) + 6, 20, 52);
+            RECT youRc = {radarCenterX - myPillHalf, radarCenterY + 16, radarCenterX + myPillHalf, radarCenterY + 29};
+            DrawRoundedRect(hdc, youRc, 4, isDark ? RGB(16, 20, 28) : RGB(242, 246, 252), isDark ? RGB(40, 48, 64) : RGB(215, 222, 235), 1);
+            SetTextColor(hdc, isDark ? RGB(180, 195, 220) : RGB(30, 40, 60));
+            DrawTextW(hdc, myLabel.c_str(), -1, &youRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
             // Discovered Peer Nodes
             s_peerNodeRects.clear();
@@ -282,7 +465,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
 
             if (currentPeers.empty()) {
                 SelectObject(hdc, secFont);
-                SetTextColor(hdc, isDark ? RGB(110, 122, 142) : RGB(140, 150, 165));
+                SetTextColor(hdc, isDark ? RGB(110, 122, 142) : RGB(65, 75, 95));
                 RECT searchRc = {rightLeft, radarCenterY + 44, rightLeft + rightWidth, radarCenterY + 60};
                 DrawTextW(hdc, L"Scanning local Wi-Fi for nearby WinTray PCs...", -1, &searchRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             } else {
@@ -294,7 +477,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
                     } else {
                         angle = static_cast<float>(i) * (6.283185f / currentPeers.size()) - 1.570796f;
                     }
-                    float dist = 48.0f;
+                    float dist = 54.0f;
 
                     int px = radarCenterX + static_cast<int>(dist * cos(angle));
                     int py = radarCenterY + static_cast<int>(dist * sin(angle));
@@ -310,49 +493,95 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
 
                     DrawRoundedRect(hdc, nodeRc, 14, nBg, nBorder, isHovered ? 2 : 1);
                     SelectObject(hdc, iconFont);
-                    SetTextColor(hdc, isHovered ? RGB(0, 160, 255) : (isDark ? RGB(200, 210, 230) : RGB(60, 70, 90)));
+                    SetTextColor(hdc, isHovered ? RGB(0, 160, 255) : (isDark ? RGB(200, 210, 230) : RGB(25, 35, 55)));
                     DrawTextW(hdc, L"\xE7F8", -1, &nodeRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-                    RECT pNameRc = {px - 45, py + 16, px + 45, py + 28};
+                    // Peer name label fitted snugly to text width (not overly wide)
                     SelectObject(hdc, boldSecFont);
+                    SIZE peerTextSz = {};
+                    GetTextExtentPoint32W(hdc, peer.name.c_str(), static_cast<int>(peer.name.size()), &peerTextSz);
+                    int pillHalfW = ClampInt(static_cast<int>(peerTextSz.cx / 2) + 6, 18, 42);
+                    RECT pNameRc = {px - pillHalfW, py + 16, px + pillHalfW, py + 29};
+                    COLORREF nameBg = isDark ? RGB(16, 20, 28) : RGB(242, 246, 252);
+                    DrawRoundedRect(hdc, pNameRc, 4, nameBg, isDark ? RGB(40, 48, 64) : RGB(215, 222, 235), 1);
                     SetTextColor(hdc, isDark ? RGB(235, 240, 252) : RGB(20, 30, 45));
-                    DrawTextW(hdc, peer.name.c_str(), -1, &pNameRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                    DrawTextW(hdc, peer.name.c_str(), -1, &pNameRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
                 }
             }
 
-            // Bottom File Bar on Right Side
-            int fileBarY = contentBottom - 34;
-            RECT fileCardRc = {rightLeft + 4, fileBarY, rightLeft + rightWidth - 85, fileBarY + 30};
-            COLORREF fcBg = isDark ? RGB(22, 26, 36) : RGB(230, 236, 246);
-            COLORREF fcBorder = isDark ? RGB(50, 58, 75) : RGB(200, 210, 225);
-            DrawRoundedRect(hdc, fileCardRc, 8, fcBg, fcBorder, 1);
+            // Bottom Area on Right Side: Source Picker OR Status / Send Again Bar
+            bottomY = contentBottom - 36;
+            if (s_showSourcePicker) {
+                // Interactive Card: "Share to <PeerName>" with 2 options
+                RECT pickerRc = {rightLeft + 4, bottomY - 6, rightLeft + rightWidth - 4, bottomY + 34};
+                COLORREF pBg = isDark ? RGB(22, 28, 40) : RGB(236, 242, 252);
+                DrawRoundedRect(hdc, pickerRc, 8, pBg, RGB(0, 140, 240), 1);
 
-            SelectObject(hdc, secFont);
-            SetTextColor(hdc, isDark ? RGB(215, 225, 245) : RGB(30, 40, 55));
-            std::wstring fileLabel;
-            if (!s_statusMessage.empty() && s_statusMessage != L"Ready to share") {
-                fileLabel = s_statusMessage;
-            } else if (!s_activeFilePath.empty()) {
-                fileLabel = L"Send: " + GetFileNameOnly(s_activeFilePath);
+                // Option 1: [From Tray (N)]
+                int optW = 105;
+                s_fromTrayRect = {pickerRc.left + 8, pickerRc.top + 6, pickerRc.left + 8 + optW, pickerRc.bottom - 6};
+                COLORREF trayBg = s_fromTrayHovered ? (isDark ? RGB(32, 90, 170) : RGB(190, 220, 255))
+                                                    : (isDark ? RGB(24, 65, 120) : RGB(215, 232, 255));
+                DrawRoundedRect(hdc, s_fromTrayRect, 6, trayBg, RGB(0, 140, 240), 1);
+                SelectObject(hdc, boldSecFont);
+                SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(0, 80, 180));
+                std::wstring trayLabel = L"From Tray (" + std::to_wstring(g_items.size()) + L")";
+                DrawTextW(hdc, trayLabel.c_str(), -1, &s_fromTrayRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                // Option 2: [From Computer...]
+                s_fromComputerRect = {s_fromTrayRect.right + 6, pickerRc.top + 6, s_fromTrayRect.right + 6 + optW + 15, pickerRc.bottom - 6};
+                COLORREF compBg = s_fromComputerHovered ? (isDark ? RGB(45, 55, 75) : RGB(220, 228, 242))
+                                                        : (isDark ? RGB(30, 38, 54) : RGB(230, 238, 248));
+                DrawRoundedRect(hdc, s_fromComputerRect, 6, compBg, isDark ? RGB(60, 75, 100) : RGB(190, 205, 225), 1);
+                SelectObject(hdc, boldSecFont);
+                SetTextColor(hdc, isDark ? RGB(220, 230, 250) : RGB(30, 45, 65));
+                DrawTextW(hdc, L"From Computer...", -1, &s_fromComputerRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                // Close Button [X]
+                s_closePickerRect = {pickerRc.right - 28, pickerRc.top + 6, pickerRc.right - 6, pickerRc.bottom - 6};
+                SelectObject(hdc, fluentIconFont);
+                SetTextColor(hdc, s_closePickerHovered ? RGB(239, 68, 68) : (isDark ? RGB(140, 150, 170) : RGB(120, 130, 145)));
+                DrawTextW(hdc, L"\xE711", -1, &s_closePickerRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                s_sendAgainRect = {0, 0, 0, 0};
             } else {
-                fileLabel = L"Drop file or Browse ->";
-            }
-            RECT fTextRc = {fileCardRc.left + 8, fileCardRc.top, fileCardRc.right - 8, fileCardRc.bottom};
-            DrawTextW(hdc, fileLabel.c_str(), -1, &fTextRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);
+                s_fromTrayRect = {0, 0, 0, 0};
+                s_fromComputerRect = {0, 0, 0, 0};
+                s_closePickerRect = {0, 0, 0, 0};
 
-            // Browse Button
-            s_browseRect = {rightLeft + rightWidth - 80, fileBarY, rightLeft + rightWidth, fileBarY + 30};
-            COLORREF bBg = s_browseHovered ? (isDark ? RGB(32, 90, 170) : RGB(190, 220, 255))
-                                           : (isDark ? RGB(24, 75, 140) : RGB(210, 230, 255));
-            DrawRoundedRect(hdc, s_browseRect, 8, bBg, RGB(0, 120, 215), 1);
-            SelectObject(hdc, boldSecFont);
-            SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(0, 90, 180));
-            DrawTextW(hdc, L"Browse...", -1, &s_browseRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-        }
-        else
-        {
-            s_peerNodeRects.clear();
-            s_browseRect = {0, 0, 0, 0};
+                if (s_isExpiredFailure && !s_lastFailedFiles.empty()) {
+                    // Transfer Expired Bar with [Send Again?] Button
+                    int btnW = 95;
+                    RECT barRc = {rightLeft + 4, bottomY, rightLeft + rightWidth - btnW - 10, bottomY + 30};
+                    COLORREF expBg = isDark ? RGB(40, 20, 24) : RGB(255, 232, 235);
+                    DrawRoundedRect(hdc, barRc, 6, expBg, RGB(239, 68, 68), 1);
+                    SelectObject(hdc, boldSecFont);
+                    SetTextColor(hdc, RGB(239, 68, 68));
+                    DrawTextW(hdc, L"\x23F1 AirDrop expired (Peer timed out)", -1, &barRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+                    s_sendAgainRect = {barRc.right + 6, bottomY, rightLeft + rightWidth - 4, bottomY + 30};
+                    COLORREF sBg = s_sendAgainHovered ? RGB(5, 150, 105) : RGB(16, 185, 129);
+                    DrawRoundedRect(hdc, s_sendAgainRect, 6, sBg, sBg, 0);
+                    SelectObject(hdc, boldSecFont);
+                    SetTextColor(hdc, RGB(255, 255, 255));
+                    DrawTextW(hdc, L"Send Again?", -1, &s_sendAgainRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                } else {
+                    s_sendAgainRect = {0, 0, 0, 0};
+                    RECT statusRc = {rightLeft + 4, bottomY, rightLeft + rightWidth - 4, bottomY + 30};
+                    COLORREF sBg = isDark ? RGB(20, 24, 34) : RGB(235, 240, 248);
+                    COLORREF sBorder = isDark ? RGB(45, 52, 68) : RGB(210, 218, 230);
+                    DrawRoundedRect(hdc, statusRc, 6, sBg, sBorder, 1);
+
+                    SelectObject(hdc, secFont);
+                    SetTextColor(hdc, isDark ? RGB(180, 195, 220) : RGB(60, 75, 95));
+                    std::wstring label = s_statusMessage;
+                    if (label.empty() || label == L"Ready to share") {
+                        label = L"Click on any nearby PC on the radar to send files";
+                    }
+                    RECT sTextRc = {statusRc.left + 8, statusRc.top, statusRc.right - 8, statusRc.bottom};
+                    DrawTextW(hdc, label.c_str(), -1, &sTextRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+                }
+            }
         }
     }
     else
@@ -360,17 +589,45 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         // ==========================================
         // VERTICAL DOCK SHARE TAB (EDGE_LEFT / RIGHT)
         // ==========================================
-        int contentLeft = (dockEdge == EDGE_LEFT) ? 40 : 12;
-        int contentW = width - 52;
-        int topY = 24;
+        bool isLeft = (dockEdge == EDGE_LEFT);
+        int contentLeft = isLeft ? 42 : 12;
+        int contentRight = isLeft ? (width - 12) : (width - 42);
+        int contentW = contentRight - contentLeft;
+        int topY = 20;
+
+        // Service Toggle Pill at Top-Right
+        s_serviceToggleRect = {contentRight - 54, topY, contentRight, topY + 20};
+        COLORREF togBg = isSvcRunning ? (isDark ? RGB(16, 60, 40) : RGB(220, 248, 232))
+                                      : (isDark ? RGB(36, 42, 54) : RGB(225, 232, 244));
+        COLORREF togBorder = isSvcRunning ? RGB(16, 185, 129)
+                                          : (isDark ? RGB(65, 75, 95) : RGB(180, 195, 215));
+        COLORREF togText = isSvcRunning ? (isDark ? RGB(52, 211, 153) : RGB(5, 150, 105))
+                                        : (isDark ? RGB(160, 170, 188) : RGB(70, 80, 100));
+        DrawRoundedRect(hdc, s_serviceToggleRect, 6, togBg, togBorder, 1);
+        SelectObject(hdc, smallFont);
+        SetTextColor(hdc, togText);
+        DrawTextW(hdc, isSvcRunning ? L"● ON" : L"○ OFF", -1, &s_serviceToggleRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        if (!isSvcRunning)
+        {
+            DrawStandbyShareView(hdc, contentLeft, topY + 28, contentRight, height - 16, isDark, true, titleFont, secFont, iconFont);
+            RestoreDC(hdc, savedDC);
+            DeleteObject(iconFont);
+            DeleteObject(fluentIconFont);
+            DeleteObject(titleFont);
+            DeleteObject(secFont);
+            DeleteObject(boldSecFont);
+            DeleteObject(smallFont);
+            return;
+        }
 
         SelectObject(hdc, titleFont);
         SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(20, 24, 32));
-        RECT qrTitleRc = {contentLeft, topY, contentLeft + contentW, topY + 20};
-        DrawTextW(hdc, L"AirDrop / Share", -1, &qrTitleRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        RECT qrTitleRc = {contentLeft, topY, contentRight - 60, topY + 20};
+        DrawTextW(hdc, L"AirDrop / Share", -1, &qrTitleRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-        // Enlarged QR Code (160px)
-        int qrCardSize = 160;
+        // Enlarged QR Code (152px)
+        int qrCardSize = 152;
         int qrCardX = contentLeft + (contentW - qrCardSize) / 2;
         int qrCardY = topY + 24;
         RECT qrCardRc = {qrCardX, qrCardY, qrCardX + qrCardSize, qrCardY + qrCardSize};
@@ -403,7 +660,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         }
 
         int linkY = qrCardY + qrCardSize + 6;
-        s_copyLinkRect = {contentLeft + 8, linkY, contentLeft + contentW - 8, linkY + 22};
+        s_copyLinkRect = {contentLeft + 8, linkY, contentRight - 8, linkY + 22};
         COLORREF linkBg = s_copyLinkHovered ? (isDark ? RGB(20, 50, 95) : RGB(215, 235, 255))
                                             : (isDark ? RGB(24, 30, 42) : RGB(230, 236, 246));
         DrawRoundedRect(hdc, s_copyLinkRect, 6, linkBg, RGB(0, 120, 215), 1);
@@ -412,35 +669,36 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         DrawTextW(hdc, wUrl.c_str(), -1, &s_copyLinkRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         // Divider
-        int divY = linkY + 30;
-        COLORREF divCol = isDark ? RGB(45, 52, 68) : RGB(210, 218, 230);
+        int divY = linkY + 28;
+        COLORREF divCol = isDark ? RGB(45, 52, 68) : RGB(190, 202, 218);
         HPEN divPen = CreatePen(PS_SOLID, 1, divCol);
         HGDIOBJ oldP = SelectObject(hdc, divPen);
         MoveToEx(hdc, contentLeft + 10, divY, nullptr);
-        LineTo(hdc, contentLeft + contentW - 10, divY);
+        LineTo(hdc, contentRight - 10, divY);
         SelectObject(hdc, oldP);
         DeleteObject(divPen);
 
         if (height > 320)
         {
-            // Radar
-            int radarCenterX = contentLeft + contentW / 2;
-            int radarCenterY = divY + 80;
+            int bAreaY = height - 76;
+            // Radar center perfectly centered in the vertical content pane
+            int radarCenterX = (contentLeft + contentRight) / 2;
+            int radarCenterY = (divY + 12 + bAreaY - 8) / 2;
 
             COLORREF ringCol = isDark ? RGB(32, 44, 62) : RGB(210, 222, 238);
             HPEN ringPen = CreatePen(PS_SOLID, 1, ringCol);
             oldP = SelectObject(hdc, ringPen);
             HGDIOBJ oldB = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            for (int r : {22, 44, 66}) {
+            for (int r : {26, 54, 82}) {
                 Ellipse(hdc, radarCenterX - r, radarCenterY - r, radarCenterX + r, radarCenterY + r);
             }
 
             ULONGLONG nowTick = GetTickCount64();
             for (int offset : {0, 1100}) {
                 float pNorm = static_cast<float>((nowTick + offset) % 2200) / 2200.0f;
-                int pulseR = static_cast<int>(6.0f + pNorm * 62.0f);
-                if (pulseR > 6 && pulseR < 70) {
+                int pulseR = static_cast<int>(8.0f + pNorm * 74.0f);
+                if (pulseR > 8 && pulseR < 84) {
                     COLORREF pulseCol = isDark ? (pNorm < 0.6f ? RGB(0, 150, 245) : RGB(0, 100, 180))
                                                : (pNorm < 0.6f ? RGB(30, 140, 235) : RGB(100, 180, 245));
                     HPEN pulsePen = CreatePen(PS_SOLID, pNorm < 0.5f ? 2 : 1, pulseCol);
@@ -461,6 +719,18 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
             SetTextColor(hdc, RGB(255, 255, 255));
             DrawTextW(hdc, L"\xE7F8", -1, &centerRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
+            std::wstring myName = g_settings.username;
+            if (myName.empty()) myName = L"You";
+            std::wstring myLabel = myName + L" (You)";
+            SelectObject(hdc, secFont);
+            SIZE myTextSz = {};
+            GetTextExtentPoint32W(hdc, myLabel.c_str(), static_cast<int>(myLabel.size()), &myTextSz);
+            int myPillHalf = ClampInt(static_cast<int>(myTextSz.cx / 2) + 6, 20, 52);
+            RECT youRc = {radarCenterX - myPillHalf, radarCenterY + 16, radarCenterX + myPillHalf, radarCenterY + 29};
+            DrawRoundedRect(hdc, youRc, 4, isDark ? RGB(16, 20, 28) : RGB(242, 246, 252), isDark ? RGB(40, 48, 64) : RGB(215, 222, 235), 1);
+            SetTextColor(hdc, isDark ? RGB(180, 195, 220) : RGB(30, 40, 60));
+            DrawTextW(hdc, myLabel.c_str(), -1, &youRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
             // Discovered Peer Nodes in vertical mode
             s_peerNodeRects.clear();
             std::vector<DiscoveredPeer> currentPeers;
@@ -477,7 +747,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
                 } else {
                     angle = static_cast<float>(i) * (6.283185f / currentPeers.size()) - 1.570796f;
                 }
-                float dist = 42.0f;
+                float dist = 54.0f;
 
                 int px = radarCenterX + static_cast<int>(dist * cos(angle));
                 int py = radarCenterY + static_cast<int>(dist * sin(angle));
@@ -491,36 +761,93 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
                 DrawRoundedRect(hdc, nodeRc, 14, nBg, isHovered ? RGB(0, 160, 255) : RGB(70, 85, 110), 1);
 
                 SelectObject(hdc, iconFont);
-                SetTextColor(hdc, isHovered ? RGB(0, 160, 255) : RGB(200, 210, 230));
+                SetTextColor(hdc, isHovered ? RGB(0, 160, 255) : (isDark ? RGB(200, 210, 230) : RGB(25, 35, 55)));
                 DrawTextW(hdc, L"\xE7F8", -1, &nodeRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                // Device name badge fitted snugly to text width (not overly wide)
+                SelectObject(hdc, boldSecFont);
+                SIZE peerTextSz = {};
+                GetTextExtentPoint32W(hdc, peer.name.c_str(), static_cast<int>(peer.name.size()), &peerTextSz);
+                int pillHalfW = ClampInt(static_cast<int>(peerTextSz.cx / 2) + 6, 18, 42);
+                RECT pNameRc = {px - pillHalfW, py + 16, px + pillHalfW, py + 29};
+                COLORREF nameBg = isDark ? RGB(16, 20, 28) : RGB(242, 246, 252);
+                DrawRoundedRect(hdc, pNameRc, 4, nameBg, isDark ? RGB(40, 48, 64) : RGB(215, 222, 235), 1);
+                SetTextColor(hdc, isDark ? RGB(235, 240, 252) : RGB(20, 30, 45));
+                DrawTextW(hdc, peer.name.c_str(), -1, &pNameRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
             }
 
-            // Bottom Browse Button
-            int bBtnY = height - 44;
-            s_browseRect = {contentLeft + 10, bBtnY, contentLeft + contentW - 10, bBtnY + 32};
-            COLORREF bBg = s_browseHovered ? (isDark ? RGB(32, 90, 170) : RGB(190, 220, 255))
-                                           : (isDark ? RGB(24, 75, 140) : RGB(210, 230, 255));
-            DrawRoundedRect(hdc, s_browseRect, 8, bBg, RGB(0, 120, 215), 1);
-            SelectObject(hdc, boldSecFont);
-            SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(0, 90, 180));
-            std::wstring bLabel = !s_activeFilePath.empty() ? (L"Send: " + GetFileNameOnly(s_activeFilePath)) : L"Browse File to Send...";
-            if (!s_statusMessage.empty() && s_statusMessage != L"Ready to share") {
-                bLabel = s_statusMessage;
+            // Bottom Area in Vertical Dock
+            bAreaY = height - 76;
+            if (s_showSourcePicker) {
+                RECT pickerRc = {contentLeft + 4, bAreaY - 8, contentRight - 4, height - 10};
+                COLORREF pBg = isDark ? RGB(22, 28, 40) : RGB(236, 242, 252);
+                DrawRoundedRect(hdc, pickerRc, 8, pBg, RGB(0, 140, 240), 1);
+
+                // Option 1: [From Tray]
+                int halfW = (pickerRc.right - pickerRc.left - 20) / 2;
+                s_fromTrayRect = {pickerRc.left + 6, pickerRc.top + 6, pickerRc.left + 6 + halfW, pickerRc.bottom - 6};
+                COLORREF trayBg = s_fromTrayHovered ? (isDark ? RGB(32, 90, 170) : RGB(190, 220, 255))
+                                                    : (isDark ? RGB(24, 65, 120) : RGB(215, 232, 255));
+                DrawRoundedRect(hdc, s_fromTrayRect, 6, trayBg, RGB(0, 140, 240), 1);
+                SelectObject(hdc, boldSecFont);
+                SetTextColor(hdc, isDark ? RGB(255, 255, 255) : RGB(0, 80, 180));
+                std::wstring tLabel = L"From Tray (" + std::to_wstring(g_items.size()) + L")";
+                DrawTextW(hdc, tLabel.c_str(), -1, &s_fromTrayRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                // Option 2: [Computer...]
+                s_fromComputerRect = {s_fromTrayRect.right + 6, pickerRc.top + 6, pickerRc.right - 26, pickerRc.bottom - 6};
+                COLORREF compBg = s_fromComputerHovered ? (isDark ? RGB(45, 55, 75) : RGB(220, 228, 242))
+                                                        : (isDark ? RGB(30, 38, 54) : RGB(230, 238, 248));
+                DrawRoundedRect(hdc, s_fromComputerRect, 6, compBg, isDark ? RGB(60, 75, 100) : RGB(190, 205, 225), 1);
+                SelectObject(hdc, boldSecFont);
+                SetTextColor(hdc, isDark ? RGB(220, 230, 250) : RGB(30, 45, 65));
+                DrawTextW(hdc, L"Computer...", -1, &s_fromComputerRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                // Close Button [X]
+                s_closePickerRect = {pickerRc.right - 24, pickerRc.top + 6, pickerRc.right - 4, pickerRc.bottom - 6};
+                SelectObject(hdc, fluentIconFont);
+                SetTextColor(hdc, s_closePickerHovered ? RGB(239, 68, 68) : (isDark ? RGB(140, 150, 170) : RGB(120, 130, 145)));
+                DrawTextW(hdc, L"\xE711", -1, &s_closePickerRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+                s_sendAgainRect = {0, 0, 0, 0};
+            } else {
+                s_fromTrayRect = {0, 0, 0, 0};
+                s_fromComputerRect = {0, 0, 0, 0};
+                s_closePickerRect = {0, 0, 0, 0};
+
+                if (s_isExpiredFailure && !s_lastFailedFiles.empty()) {
+                    // Send Again Button
+                    s_sendAgainRect = {contentLeft + 8, height - 42, contentLeft + contentW - 8, height - 12};
+                    COLORREF sBg = s_sendAgainHovered ? RGB(5, 150, 105) : RGB(16, 185, 129);
+                    DrawRoundedRect(hdc, s_sendAgainRect, 6, sBg, sBg, 0);
+                    SelectObject(hdc, boldSecFont);
+                    SetTextColor(hdc, RGB(255, 255, 255));
+                    DrawTextW(hdc, L"AirDrop Expired. Send Again?", -1, &s_sendAgainRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                } else {
+                    s_sendAgainRect = {0, 0, 0, 0};
+                    RECT statusRc = {contentLeft + 8, height - 42, contentLeft + contentW - 8, height - 12};
+                    COLORREF sBg = isDark ? RGB(20, 24, 34) : RGB(235, 240, 248);
+                    COLORREF sBorder = isDark ? RGB(45, 52, 68) : RGB(210, 218, 230);
+                    DrawRoundedRect(hdc, statusRc, 6, sBg, sBorder, 1);
+                    SelectObject(hdc, secFont);
+                    SetTextColor(hdc, isDark ? RGB(180, 195, 220) : RGB(60, 75, 95));
+                    std::wstring label = s_statusMessage;
+                    if (label.empty() || label == L"Ready to share") {
+                        label = L"Click nearby PC to send";
+                    }
+                    DrawTextW(hdc, label.c_str(), -1, &statusRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
+                }
             }
-            DrawTextW(hdc, bLabel.c_str(), -1, &s_browseRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS);
-        }
-        else
-        {
-            s_peerNodeRects.clear();
-            s_browseRect = {0, 0, 0, 0};
         }
     }
 
     SelectObject(hdc, oldF);
     DeleteObject(iconFont);
+    DeleteObject(fluentIconFont);
     DeleteObject(titleFont);
     DeleteObject(secFont);
     DeleteObject(boldSecFont);
+    DeleteObject(smallFont);
     RestoreDC(hdc, savedDC);
 }
 
@@ -528,9 +855,14 @@ bool HandleShareTabMouseMove(HWND hwnd, POINT pt)
 {
     bool needRepaint = false;
 
-    bool browseHov = PtInRect(&s_browseRect, pt);
-    if (browseHov != s_browseHovered) {
-        s_browseHovered = browseHov;
+    bool togHov = PtInRect(&s_serviceToggleRect, pt);
+    if (togHov != s_serviceToggleHovered) {
+        s_serviceToggleHovered = togHov;
+        needRepaint = true;
+    }
+    bool enHov = PtInRect(&s_enableServiceBtnRect, pt);
+    if (enHov != s_enableServiceBtnHovered) {
+        s_enableServiceBtnHovered = enHov;
         needRepaint = true;
     }
 
@@ -552,35 +884,61 @@ bool HandleShareTabMouseMove(HWND hwnd, POINT pt)
         needRepaint = true;
     }
 
-    if (needRepaint) {
+    bool trayHov = PtInRect(&s_fromTrayRect, pt);
+    if (trayHov != s_fromTrayHovered) {
+        s_fromTrayHovered = trayHov;
+        needRepaint = true;
+    }
+
+    bool compHov = PtInRect(&s_fromComputerRect, pt);
+    if (compHov != s_fromComputerHovered) {
+        s_fromComputerHovered = compHov;
+        needRepaint = true;
+    }
+
+    bool closeHov = PtInRect(&s_closePickerRect, pt);
+    if (closeHov != s_closePickerHovered) {
+        s_closePickerHovered = closeHov;
+        needRepaint = true;
+    }
+
+    bool againHov = PtInRect(&s_sendAgainRect, pt);
+    if (againHov != s_sendAgainHovered) {
+        s_sendAgainHovered = againHov;
+        needRepaint = true;
+    }
+
+    if (needRepaint && IsWindow(hwnd)) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
-    return (browseHov || linkHov || peerHov != -1);
+    return (linkHov || peerHov != -1 || trayHov || compHov || closeHov || againHov);
 }
 
 bool HandleShareTabClick(HWND hwnd, POINT pt)
 {
-    // Browse File button
-    if (PtInRect(&s_browseRect, pt)) {
-        wchar_t szFile[MAX_PATH] = {0};
-        OPENFILENAMEW ofn = {};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwnd;
-        ofn.lpstrFile = szFile;
-        ofn.nMaxFile = sizeof(szFile);
-        ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
-        ofn.nFilterIndex = 1;
-        ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-        if (GetOpenFileNameW(&ofn)) {
-            s_activeFilePath = szFile;
-            s_statusMessage = L"Ready to send: " + GetFileNameOnly(s_activeFilePath);
-            InvalidateRect(hwnd, nullptr, FALSE);
+    // 0. Toggle WinShare Service ON/OFF
+    if (PtInRect(&s_serviceToggleRect, pt) || PtInRect(&s_enableServiceBtnRect, pt)) {
+        bool newActive = !g_settings.enableAirDrop;
+        if (PtInRect(&s_enableServiceBtnRect, pt)) {
+            newActive = true;
         }
+        g_settings.enableAirDrop = newActive;
+        SaveSettings();
+        if (newActive) {
+            NetworkManager::Instance().Start();
+            NetworkManager::Instance().TriggerQuickScan();
+        } else {
+            NetworkManager::Instance().Stop();
+        }
+        InvalidateRect(hwnd, nullptr, FALSE);
         return true;
     }
 
-    // Click Copy Link
+    if (!g_settings.enableAirDrop || !NetworkManager::Instance().IsRunning()) {
+        return false;
+    }
+
+    // 1. Click Copy Link
     if (PtInRect(&s_copyLinkRect, pt)) {
         std::string localIp = NetworkManager::Instance().GetLocalIP();
         int httpPort = NetworkManager::Instance().GetHttpPort();
@@ -603,28 +961,53 @@ bool HandleShareTabClick(HWND hwnd, POINT pt)
         return true;
     }
 
-    // Click on Discovered Peer to send file
+    // 2. Click "Send Again?" button if transfer expired
+    if (PtInRect(&s_sendAgainRect, pt)) {
+        if (s_isExpiredFailure && !s_lastFailedFiles.empty()) {
+            StartSendFiles(hwnd, s_lastFailedPeer, s_lastFailedFiles);
+        }
+        return true;
+    }
+
+    // 3. Source Picker Actions
+    if (s_showSourcePicker) {
+        if (PtInRect(&s_fromTrayRect, pt)) {
+            s_showSourcePicker = false;
+            std::vector<std::wstring> trayFiles;
+            for (const auto& it : g_items) {
+                if (it.isSelected) trayFiles.push_back(it.path);
+            }
+            if (trayFiles.empty()) {
+                for (const auto& it : g_items) trayFiles.push_back(it.path);
+            }
+            if (!trayFiles.empty()) {
+                StartSendFiles(hwnd, s_chosenPeer, trayFiles);
+            } else {
+                s_statusMessage = L"Tray is empty.";
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return true;
+        }
+
+        if (PtInRect(&s_fromComputerRect, pt)) {
+            s_showSourcePicker = false;
+            auto pickedFiles = PickFilesFromComputer(hwnd);
+            if (!pickedFiles.empty()) {
+                StartSendFiles(hwnd, s_chosenPeer, pickedFiles);
+            }
+            return true;
+        }
+
+        if (PtInRect(&s_closePickerRect, pt)) {
+            s_showSourcePicker = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
+    }
+
+    // 4. Click on Discovered Peer Node
     for (size_t i = 0; i < s_peerNodeRects.size(); ++i) {
         if (PtInRect(&s_peerNodeRects[i], pt)) {
-            if (s_activeFilePath.empty()) {
-                // Auto-open browse dialog if no file is selected
-                wchar_t szFile[MAX_PATH] = {0};
-                OPENFILENAMEW ofn = {};
-                ofn.lStructSize = sizeof(ofn);
-                ofn.hwndOwner = hwnd;
-                ofn.lpstrFile = szFile;
-                ofn.nMaxFile = sizeof(szFile);
-                ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
-                ofn.nFilterIndex = 1;
-                ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
-
-                if (GetOpenFileNameW(&ofn)) {
-                    s_activeFilePath = szFile;
-                } else {
-                    return true;
-                }
-            }
-
             if (s_isTransferring) return true;
 
             DiscoveredPeer targetPeer;
@@ -634,28 +1017,35 @@ bool HandleShareTabClick(HWND hwnd, POINT pt)
                 else return true;
             }
 
-            s_isTransferring = true;
-            s_statusMessage = L"Sending file to " + targetPeer.name + L"...";
-            InvalidateRect(hwnd, nullptr, FALSE);
+            // If a specific file was passed via right-click (s_activeFilePaths not empty)
+            if (!s_activeFilePaths.empty()) {
+                std::vector<std::wstring> files = s_activeFilePaths;
+                s_activeFilePaths.clear();
+                StartSendFiles(hwnd, targetPeer, files);
+                return true;
+            }
 
-            std::wstring filePath = s_activeFilePath;
-            std::thread([hwnd, targetPeer, filePath]() {
-                std::string err;
-                bool ok = NetworkManager::Instance().SendFileToPeer(targetPeer.ip, filePath, err, targetPeer.port);
-                s_isTransferring = false;
-                if (ok) {
-                    s_statusMessage = L"Transfer to " + targetPeer.name + L" completed successfully!";
-                } else {
-                    std::wstring wErr(err.begin(), err.end());
-                    s_statusMessage = L"Transfer failed: " + wErr;
+            // Requirement 4: If tray is empty, automatically open computer picker.
+            // If tray has files, show the 2 options: "From tray" and "From computer".
+            if (g_items.empty()) {
+                auto pickedFiles = PickFilesFromComputer(hwnd);
+                if (!pickedFiles.empty()) {
+                    StartSendFiles(hwnd, targetPeer, pickedFiles);
                 }
-                if (IsWindow(hwnd)) {
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }).detach();
-
+            } else {
+                s_showSourcePicker = true;
+                s_chosenPeer = targetPeer;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             return true;
         }
+    }
+
+    // Click outside dismisses source picker
+    if (s_showSourcePicker) {
+        s_showSourcePicker = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return true;
     }
 
     return false;
@@ -668,6 +1058,11 @@ void OpenShareDialog(HWND parentHwnd, const std::wstring &initialFilePath)
 
     if (g_mainHwnd && IsWindow(g_mainHwnd)) {
         g_activeTab = TAB_SHARE;
+        if (!g_settings.enableAirDrop) {
+            g_settings.enableAirDrop = true;
+            SaveSettings();
+            NetworkManager::Instance().Start();
+        }
         NetworkManager::Instance().TriggerQuickScan();
         TriggerExpand(g_mainHwnd);
         CalculateTargetSize(true);

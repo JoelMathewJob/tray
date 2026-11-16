@@ -34,6 +34,7 @@ RECT g_tabControlsRect = {};
 RECT g_tabActionsRect = {};
 RECT g_tabMusicRect = {};
 RECT g_tabShareRect = {};
+RECT g_tabNotificationsRect = {};
 RECT g_settingsBtnRect = {};
 RECT g_brightnessCapsuleRect = {};
 RECT g_volumeCapsuleRect = {};
@@ -63,6 +64,7 @@ bool g_tabControlsHovered = false;
 bool g_tabActionsHovered = false;
 bool g_tabMusicHovered = false;
 bool g_tabShareHovered = false;
+bool g_tabNotificationsHovered = false;
 bool g_settingsHovered = false;
 bool g_wifiArrowHovered = false;
 bool g_btArrowHovered = false;
@@ -966,9 +968,9 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
     HGDIOBJ oldF = SelectObject(hdc, iconFont);
     SetBkMode(hdc, TRANSPARENT);
 
-    COLORREF textInactive = isDark ? RGB(140, 148, 165) : RGB(140, 150, 168);
-    COLORREF textHover = isDark ? RGB(220, 225, 240) : RGB(60, 70, 90);
-    COLORREF textActive = isDark ? RGB(255, 255, 255) : RGB(15, 20, 30);
+    COLORREF textInactive = isDark ? RGB(140, 148, 165) : RGB(70, 80, 100);
+    COLORREF textHover = isDark ? RGB(220, 225, 240) : RGB(15, 23, 42);
+    COLORREF textActive = isDark ? RGB(255, 255, 255) : RGB(5, 10, 20);
 
     if (isVert)
     {
@@ -981,7 +983,7 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int startY = 24;
         int gap = 8;
 
-        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 1;
+        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 2;
         g_tabFilesRect = {barX, startY, barX + btnW, startY + btnH};
         g_tabControlsRect = {barX, startY + btnH + gap, barX + btnW, startY + (btnH + gap) * 2};
         g_tabActionsRect = {barX, startY + (btnH + gap) * 2, barX + btnW, startY + (btnH + gap) * 3};
@@ -995,6 +997,9 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             g_tabMusicRect = {0, 0, 0, 0};
 
         g_tabShareRect = {barX, startY + (btnH + gap) * vSlot, barX + btnW, startY + (btnH + gap) * (vSlot + 1)};
+        vSlot++;
+
+        g_tabNotificationsRect = {barX, startY + (btnH + gap) * vSlot, barX + btnW, startY + (btnH + gap) * (vSlot + 1)};
 
         int divY = startY + (btnH + gap) * tabCount + 6;
         int gearY = divY + 8;
@@ -1101,6 +1106,42 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             }
         }
 
+        // Notifications Tab
+        {
+            bool notifActive = (activeTab == TAB_NOTIFICATIONS);
+            COLORREF notifCol = notifActive ? textActive : (g_tabNotificationsHovered ? textHover : textInactive);
+            SetTextColor(hdc, notifCol);
+            DrawTextW(hdc, L"\xE7E7", -1, &g_tabNotificationsRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (notifActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(notifCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = isLeft ? (g_tabNotificationsRect.right + 2) : (g_tabNotificationsRect.left - 5);
+                int dotY = g_tabNotificationsRect.top + btnH / 2 - 2;
+                RoundRect(hdc, dotX, dotY, dotX + 3, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+
+            int pendingCount = GetPendingNotificationCount();
+            if (pendingCount > 0)
+            {
+                int badgeSize = 6;
+                int badgeX = isLeft ? (g_tabNotificationsRect.right - 8) : (g_tabNotificationsRect.left + 2);
+                int badgeY = g_tabNotificationsRect.top + 2;
+                HBRUSH badgeBr = CreateSolidBrush(RGB(239, 68, 68));
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, badgeBr);
+                SelectObject(hdc, noPen);
+                Ellipse(hdc, badgeX, badgeY, badgeX + badgeSize, badgeY + badgeSize);
+                DeleteObject(badgeBr);
+                DeleteObject(noPen);
+            }
+        }
+
         // Horizontal Divider in vertical bar
         HPEN divPen = CreatePen(PS_SOLID, 1, isDark ? RGB(65, 70, 85) : RGB(185, 195, 210));
         SelectObject(hdc, divPen);
@@ -1124,7 +1165,7 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
         int gap = 6;
         int divW = 12;
 
-        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 1;
+        int tabCount = (g_settings.showMusicTab ? 4 : 3) + 2;
         int totalBarW = (btnW + gap) * tabCount + divW + gap + btnW;
         int startX = (width - totalBarW) / 2;
 
@@ -1141,6 +1182,9 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
             g_tabMusicRect = {0, 0, 0, 0};
 
         g_tabShareRect = {startX + (btnW + gap) * hSlot, rowY, startX + (btnW + gap) * hSlot + btnW, rowY + btnH};
+        hSlot++;
+
+        g_tabNotificationsRect = {startX + (btnW + gap) * hSlot, rowY, startX + (btnW + gap) * hSlot + btnW, rowY + btnH};
 
         // Files Tab
         bool filesActive = (activeTab == TAB_FILES);
@@ -1238,6 +1282,42 @@ void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab,
                 int dotY = g_tabShareRect.bottom + 1;
                 RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
                 DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+        }
+
+        // Notifications Tab
+        {
+            bool notifActive = (activeTab == TAB_NOTIFICATIONS);
+            COLORREF notifCol = notifActive ? textActive : (g_tabNotificationsHovered ? textHover : textInactive);
+            SetTextColor(hdc, notifCol);
+            DrawTextW(hdc, L"\xE7E7", -1, &g_tabNotificationsRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+            if (notifActive)
+            {
+                HBRUSH dotB = CreateSolidBrush(notifCol);
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, dotB);
+                SelectObject(hdc, noPen);
+                int dotX = g_tabNotificationsRect.left + btnW / 2;
+                int dotY = g_tabNotificationsRect.bottom + 1;
+                RoundRect(hdc, dotX - 2, dotY, dotX + 2, dotY + 4, 2, 2);
+                DeleteObject(dotB);
+                DeleteObject(noPen);
+            }
+
+            int pendingCount = GetPendingNotificationCount();
+            if (pendingCount > 0)
+            {
+                int badgeSize = 6;
+                int badgeX = g_tabNotificationsRect.right - 7;
+                int badgeY = g_tabNotificationsRect.top + 2;
+                HBRUSH badgeBr = CreateSolidBrush(RGB(239, 68, 68));
+                HPEN noPen = CreatePen(PS_NULL, 0, 0);
+                SelectObject(hdc, badgeBr);
+                SelectObject(hdc, noPen);
+                Ellipse(hdc, badgeX, badgeY, badgeX + badgeSize, badgeY + badgeSize);
+                DeleteObject(badgeBr);
                 DeleteObject(noPen);
             }
         }
@@ -1583,7 +1663,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         bool iconCovered = (fillH >= 32);
         COLORREF iconCol = iconCovered
                                ? (isDark ? RGB(18, 20, 24) : RGB(255, 255, 255))
-                               : (isDark ? RGB(170, 175, 190) : RGB(70, 80, 100));
+                               : (isDark ? RGB(170, 175, 190) : RGB(35, 45, 65));
 
         HFONT sIconFont = CreateClearTypeFont(18, FW_NORMAL, L"Segoe MDL2 Assets");
         oldF = SelectObject(hdc, sIconFont);
@@ -1649,7 +1729,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         int badgeD = 22;
 
         COLORREF badgeBg = tl.active ? tl.activeBadge : (isDark ? RGB(44, 48, 62) : RGB(200, 208, 222));
-        COLORREF badgeIconCol = tl.active ? RGB(255, 255, 255) : (isDark ? RGB(190, 195, 205) : RGB(60, 70, 88));
+        COLORREF badgeIconCol = tl.active ? RGB(255, 255, 255) : (isDark ? RGB(190, 195, 205) : RGB(30, 40, 58));
         if (tl.id == TILE_MUTE && g_state.isMuted)
         {
             badgeBg = RGB(239, 68, 68);
@@ -1694,7 +1774,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
 
             HFONT arrowFont = CreateClearTypeFont(11, FW_NORMAL, L"Segoe MDL2 Assets");
             HGDIOBJ oldAF = SelectObject(hdc, arrowFont);
-            SetTextColor(hdc, isDark ? RGB(200, 215, 230) : RGB(60, 70, 85));
+            SetTextColor(hdc, isDark ? RGB(200, 215, 230) : RGB(40, 50, 70));
             DrawTextW(hdc, L"\xE76C", -1, &aRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
             SelectObject(hdc, oldAF);
             DeleteObject(arrowFont);
@@ -1710,7 +1790,7 @@ void RenderQuickControls(HDC hdc, int width, int height, bool isDark, int dockEd
         SelectObject(hdc, subFont);
         COLORREF subColor = tl.active
                                 ? (isDark ? RGB(190, 215, 255) : RGB(20, 95, 210))
-                                : (isDark ? RGB(145, 150, 165) : RGB(105, 115, 130));
+                                : (isDark ? RGB(145, 150, 165) : RGB(60, 70, 88));
         SetTextColor(hdc, subColor);
         RECT sRc = {tr.left + 10, tr.top + 46, textRight, tr.top + 59};
         DrawTextW(hdc, tl.subtitle.c_str(), -1, &sRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS);

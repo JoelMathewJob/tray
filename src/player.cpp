@@ -183,7 +183,6 @@ static void MediaPollerThread()
                 silentTicks = 0;
                 auto info = session.GetPlaybackInfo();
                 bool isPlaying = (info && info.PlaybackStatus() == GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing);
-                if (peak > 0.005f) isPlaying = true;
 
                 std::wstring title = L"";
                 std::wstring artist = L"";
@@ -250,8 +249,20 @@ static void MediaPollerThread()
                     auto timeline = session.GetTimelineProperties();
                     if (timeline)
                     {
-                        posMs = timeline.Position().count() / 10000;
                         durMs = timeline.EndTime().count() / 10000;
+                        LONGLONG rawPos = timeline.Position().count() / 10000;
+                        auto lastUpdated = timeline.LastUpdatedTime();
+                        auto nowUtc = winrt::clock::now();
+                        if (isPlaying && nowUtc > lastUpdated && lastUpdated.time_since_epoch().count() > 0)
+                        {
+                            auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(nowUtc - lastUpdated).count();
+                            posMs = rawPos + elapsedMs;
+                        }
+                        else
+                        {
+                            posMs = rawPos;
+                        }
+                        if (durMs > 0 && posMs > durMs) posMs = durMs;
                     }
                 }
                 catch (...) {}
@@ -283,12 +294,12 @@ static void MediaPollerThread()
                     g_media.album = album;
                     g_media.appName = appId;
                     g_media.sourceType = src;
-                    if (posMs > 0 || durMs > 0)
+                    if (!g_musicDraggingProgress && (posMs > 0 || durMs > 0 || isPlaying))
                     {
                         g_media.positionMs = posMs;
                         g_media.durationMs = durMs;
+                        g_media.lastUpdate = GetTickCount64();
                     }
-                    g_media.lastUpdate = GetTickCount64();
 
                     if (newBmp)
                     {
@@ -300,39 +311,21 @@ static void MediaPollerThread()
             else
             {
                 // No GSMTC session detected
-                if (peak > 0.005f)
+                silentTicks++;
+                if (silentTicks >= 4) // Sustained absence of media session
                 {
-                    // Audio is actively playing through speakers!
-                    silentTicks = 0;
                     std::lock_guard<std::mutex> lock(s_mediaMutex);
-                    g_media.hasActiveSession = true;
-                    g_media.isPlaying = true;
-                    if (g_media.title.empty())
+                    g_media.hasActiveSession = false;
+                    g_media.isPlaying = false;
+                    g_media.title = L"";
+                    g_media.artist = L"";
+                    g_media.album = L"";
+                    g_media.positionMs = 0;
+                    g_media.durationMs = 0;
+                    if (g_media.albumArt)
                     {
-                        g_media.title = L"Playing Audio";
-                        g_media.artist = L"System Output";
-                    }
-                    g_media.lastUpdate = GetTickCount64();
-                }
-                else
-                {
-                    // No session and silence
-                    silentTicks++;
-                    if (silentTicks >= 6) // 1.5 seconds of sustained silence & no media
-                    {
-                        std::lock_guard<std::mutex> lock(s_mediaMutex);
-                        g_media.hasActiveSession = false;
-                        g_media.isPlaying = false;
-                        g_media.title = L"";
-                        g_media.artist = L"";
-                        g_media.album = L"";
-                        g_media.positionMs = 0;
-                        g_media.durationMs = 0;
-                        if (g_media.albumArt)
-                        {
-                            delete g_media.albumArt;
-                            g_media.albumArt = nullptr;
-                        }
+                        delete g_media.albumArt;
+                        g_media.albumArt = nullptr;
                     }
                 }
             }
@@ -647,7 +640,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
     int contentW = isVert ? (width - 46 - 12) : (width - 48);
 
     COLORREF textCol = isDark ? RGB(255, 255, 255) : RGB(18, 22, 32);
-    COLORREF subCol = isDark ? RGB(160, 170, 190) : RGB(110, 120, 135);
+    COLORREF subCol = isDark ? RGB(160, 170, 190) : RGB(60, 72, 92);
 
     // ==============================================================
     // 1. STANDBY LAYOUT: NO ACTIVE MEDIA PLAYING + STREAM FAVORITES
@@ -853,9 +846,8 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         if (g_media.durationMs > 0 && pos > g_media.durationMs)
             pos = g_media.durationMs;
     }
-    LONGLONG dur = g_media.durationMs > 0 ? g_media.durationMs : 213000;
-    if (g_media.durationMs == 0 && pos == 0) pos = 102000;
-    float progressRatio = std::clamp(static_cast<float>(pos) / dur, 0.0f, 1.0f);
+    LONGLONG dur = g_media.durationMs;
+    float progressRatio = (dur > 0) ? std::clamp(static_cast<float>(pos) / dur, 0.0f, 1.0f) : 0.0f;
 
     std::wstring dispTitle = g_media.title.empty() ? L"Playing Audio" : g_media.title;
     std::wstring dispArtist = g_media.artist.empty() ? L"System Output" : g_media.artist;
@@ -924,15 +916,15 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         g_musicPrevBtnRect = {g_musicPlayPauseBtnRect.left - btnD - 8, ctrlY, g_musicPlayPauseBtnRect.left - 8, ctrlY + btnD};
 
         SelectObject(hdc, ctrlFont);
-        SetTextColor(hdc, g_musicPrevHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(80, 90, 110)));
+        SetTextColor(hdc, g_musicPrevHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(35, 45, 65)));
         DrawTextW(hdc, L"\xE892", -1, &g_musicPrevBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         SelectObject(hdc, playFont);
-        SetTextColor(hdc, g_musicPlayPauseHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(235, 240, 250) : RGB(40, 50, 65)));
+        SetTextColor(hdc, g_musicPlayPauseHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(235, 240, 250) : RGB(20, 30, 48)));
         DrawTextW(hdc, g_media.isPlaying ? L"\xE769" : L"\xE768", -1, &g_musicPlayPauseBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         SelectObject(hdc, ctrlFont);
-        SetTextColor(hdc, g_musicNextHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(80, 90, 110)));
+        SetTextColor(hdc, g_musicNextHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(35, 45, 65)));
         DrawTextW(hdc, L"\xE893", -1, &g_musicNextBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         // 4. Progress Scrubber
@@ -945,7 +937,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         g_musicProgressRect = {progX, progY, progX + progW, progY + progH};
 
         SelectObject(hdc, timeFont);
-        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(110, 120, 135));
+        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(55, 68, 88));
         RECT leftTimeRc = {startX, progY - 1, startX + timeW, progY + progH + 1};
         DrawTextW(hdc, FormatTrackTime(pos).c_str(), -1, &leftTimeRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
@@ -957,7 +949,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
 
         COLORREF waveCol = GetVisualizerAccentColor(g_settings.playerVisualizerColor);
         Gdiplus::Pen wavePen(Gdiplus::Color(255, GetRValue(waveCol), GetGValue(waveCol), GetBValue(waveCol)), 2.5f);
-        Gdiplus::Pen bgPen(isDark ? Gdiplus::Color(120, 255, 255, 255) : Gdiplus::Color(120, 0, 0, 0), 2.0f);
+        Gdiplus::Pen bgPen(isDark ? Gdiplus::Color(120, 255, 255, 255) : Gdiplus::Color(170, 0, 0, 0), 2.0f);
 
         Gdiplus::GraphicsPath wavePath;
         float step = 6.0f;
@@ -976,8 +968,16 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         Gdiplus::SolidBrush knobBr(Gdiplus::Color(255, 255, 255, 255));
         g.FillRectangle(&knobBr, knobX - 2, trackY - 6, 4, 12);
 
-        LONGLONG remainMs = dur - pos;
-        std::wstring remStr = L"-" + FormatTrackTime(remainMs);
+        std::wstring remStr;
+        if (dur > 0)
+        {
+            LONGLONG remainMs = (dur > pos) ? (dur - pos) : 0;
+            remStr = L"-" + FormatTrackTime(remainMs);
+        }
+        else
+        {
+            remStr = L"Live";
+        }
         RECT rightTimeRc = {progX + progW + 6, progY - 1, startX + contentW, progY + progH + 1};
         DrawTextW(hdc, remStr.c_str(), -1, &rightTimeRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
@@ -989,7 +989,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
 
         HFONT spkFont = CreateClearTypeFont(11, FW_NORMAL, L"Segoe MDL2 Assets");
         SelectObject(hdc, spkFont);
-        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(110, 120, 135));
+        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(40, 50, 70));
         RECT spkRc = {volX - 18, volY - 3, volX - 4, volY + 11};
         DrawTextW(hdc, L"\xE767", -1, &spkRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(hdc, timeFont);
@@ -1070,15 +1070,15 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         g_musicNextBtnRect = {g_musicPlayPauseBtnRect.right + 6, ctrlY + 2, g_musicPlayPauseBtnRect.right + 38, ctrlY + 32};
 
         SelectObject(hdc, ctrlFont);
-        SetTextColor(hdc, g_musicPrevHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(80, 90, 110)));
+        SetTextColor(hdc, g_musicPrevHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(35, 45, 65)));
         DrawTextW(hdc, L"\xE892", -1, &g_musicPrevBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         SelectObject(hdc, playFont);
-        SetTextColor(hdc, g_musicPlayPauseHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(235, 240, 250) : RGB(40, 50, 65)));
+        SetTextColor(hdc, g_musicPlayPauseHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(235, 240, 250) : RGB(20, 30, 48)));
         DrawTextW(hdc, g_media.isPlaying ? L"\xE769" : L"\xE768", -1, &g_musicPlayPauseBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         SelectObject(hdc, ctrlFont);
-        SetTextColor(hdc, g_musicNextHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(80, 90, 110)));
+        SetTextColor(hdc, g_musicNextHovered ? (isDark ? RGB(255, 255, 255) : RGB(10, 15, 25)) : (isDark ? RGB(190, 200, 215) : RGB(35, 45, 65)));
         DrawTextW(hdc, L"\xE893", -1, &g_musicNextBtnRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         // 4. Progress Scrubber
@@ -1091,7 +1091,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         g_musicProgressRect = {progX, progY, progX + progW, progY + progH};
 
         SelectObject(hdc, timeFont);
-        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(110, 120, 135));
+        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(55, 68, 88));
         RECT leftTimeRc = {startX, progY - 1, startX + timeW, progY + progH + 1};
         DrawTextW(hdc, FormatTrackTime(pos).c_str(), -1, &leftTimeRc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
@@ -1103,7 +1103,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
 
         COLORREF waveCol = GetVisualizerAccentColor(g_settings.playerVisualizerColor);
         Gdiplus::Pen wavePen(Gdiplus::Color(255, GetRValue(waveCol), GetGValue(waveCol), GetBValue(waveCol)), 2.0f);
-        Gdiplus::Pen bgPen(isDark ? Gdiplus::Color(120, 255, 255, 255) : Gdiplus::Color(120, 0, 0, 0), 1.5f);
+        Gdiplus::Pen bgPen(isDark ? Gdiplus::Color(120, 255, 255, 255) : Gdiplus::Color(170, 0, 0, 0), 1.5f);
 
         Gdiplus::GraphicsPath wavePath;
         float step = 5.0f;
@@ -1122,8 +1122,16 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
         Gdiplus::SolidBrush knobBr(Gdiplus::Color(255, 255, 255, 255));
         g.FillRectangle(&knobBr, knobX - 2, trackY - 5, 4, 10);
 
-        LONGLONG remainMs = dur - pos;
-        std::wstring remStr = L"-" + FormatTrackTime(remainMs);
+        std::wstring remStr;
+        if (dur > 0)
+        {
+            LONGLONG remainMs = (dur > pos) ? (dur - pos) : 0;
+            remStr = L"-" + FormatTrackTime(remainMs);
+        }
+        else
+        {
+            remStr = L"Live";
+        }
         RECT rightTimeRc = {progX + progW + 4, progY - 1, startX + contentW, progY + progH + 1};
         DrawTextW(hdc, remStr.c_str(), -1, &rightTimeRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
@@ -1135,7 +1143,7 @@ void RenderMusicPlayerTab(HDC hdc, int width, int height, bool isDark, int dockE
 
         HFONT spkFont = CreateClearTypeFont(10, FW_NORMAL, L"Segoe MDL2 Assets");
         SelectObject(hdc, spkFont);
-        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(110, 120, 135));
+        SetTextColor(hdc, isDark ? RGB(160, 170, 190) : RGB(40, 50, 70));
         RECT spkRc = {volX - 16, volY - 3, volX - 3, volY + 9};
         DrawTextW(hdc, L"\xE767", -1, &spkRc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
         SelectObject(hdc, timeFont);
@@ -1206,6 +1214,11 @@ bool HandleMusicPlayerClick(HWND hwnd, POINT pt)
         if (w > 0)
         {
             float ratio = std::clamp(static_cast<float>(relX) / w, 0.0f, 1.0f);
+            if (g_media.durationMs > 0)
+            {
+                g_media.positionMs = static_cast<LONGLONG>(g_media.durationMs * ratio);
+                g_media.lastUpdate = GetTickCount64();
+            }
             MediaSeekProgress(ratio);
         }
         if (hwnd && IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);
@@ -1273,6 +1286,7 @@ bool HandleMusicPlayerMouseMove(HWND hwnd, POINT pt)
                 if (g_media.durationMs > 0)
                 {
                     g_media.positionMs = static_cast<LONGLONG>(g_media.durationMs * ratio);
+                    g_media.lastUpdate = GetTickCount64();
                 }
                 needRedraw = true;
             }
@@ -1305,6 +1319,7 @@ void HandleMusicPlayerMouseUp(HWND hwnd)
         if (g_media.durationMs > 0)
         {
             float ratio = std::clamp(static_cast<float>(g_media.positionMs) / g_media.durationMs, 0.0f, 1.0f);
+            g_media.lastUpdate = GetTickCount64();
             MediaSeekProgress(ratio);
         }
         if (hwnd && IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE);

@@ -22,6 +22,7 @@ public:
     std::string GetLocalIP();
     int GetHttpPort() const { return m_httpPort.load(); }
 
+    bool SendFilesToPeer(const std::string& peerIp, const std::vector<std::wstring>& filePaths, std::string& outError, bool& outExpired, int peerPort = 8088);
     bool SendFileToPeer(const std::string& peerIp, const std::wstring& filePath, std::string& outError, int peerPort = 8088);
     void TriggerQuickScan();
     void PingPeerHttp(const std::string& peerIp, int peerPort);
