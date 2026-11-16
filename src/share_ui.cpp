@@ -93,6 +93,39 @@ static void DrawRoundedRect(HDC hdc, const RECT &r, int radius, COLORREF bg, COL
     DeleteObject(pen);
 }
 
+static void DrawShareToggleSwitch(HDC hdc, const RECT &r, bool isOn, bool isDark, bool isHovered)
+{
+    int w = r.right - r.left;
+    int h = r.bottom - r.top;
+    int radius = h / 2;
+
+    COLORREF trackBg, trackBorder, knobColor;
+    if (isOn)
+    {
+        trackBg = isHovered ? RGB(5, 165, 115) : RGB(16, 185, 129);
+        trackBorder = isHovered ? RGB(4, 140, 98) : RGB(13, 148, 103);
+        knobColor = RGB(255, 255, 255);
+    }
+    else
+    {
+        trackBg = isDark ? (isHovered ? RGB(52, 60, 76) : RGB(42, 48, 62))
+                         : (isHovered ? RGB(198, 208, 224) : RGB(214, 222, 234));
+        trackBorder = isDark ? (isHovered ? RGB(80, 92, 115) : RGB(65, 75, 95))
+                             : (isHovered ? RGB(165, 178, 198) : RGB(180, 192, 210));
+        knobColor = isDark ? RGB(190, 200, 215) : RGB(255, 255, 255);
+    }
+
+    DrawRoundedRect(hdc, r, radius, trackBg, trackBorder, 1);
+
+    int knobMargin = 2;
+    int knobD = h - knobMargin * 2;
+    int knobX = isOn ? (r.right - knobMargin - knobD) : (r.left + knobMargin);
+    int knobY = r.top + knobMargin;
+
+    RECT knobRc = {knobX, knobY, knobX + knobD, knobY + knobD};
+    DrawRoundedRect(hdc, knobRc, knobD / 2, knobColor, knobColor, 0);
+}
+
 static std::wstring GetFileNameOnly(const std::wstring& path)
 {
     size_t last = path.find_last_of(L"\\/");
@@ -288,22 +321,27 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         int contentTop = 38;
         int contentBottom = height - 12;
 
-        // Service Toggle Pill at Top-Right
-        s_serviceToggleRect = {width - 76, contentTop + 1, width - 14, contentTop + 21};
-        COLORREF togBg = isSvcRunning ? (isDark ? RGB(16, 60, 40) : RGB(220, 248, 232))
-                                      : (isDark ? RGB(36, 42, 54) : RGB(225, 232, 244));
-        COLORREF togBorder = isSvcRunning ? RGB(16, 185, 129)
-                                          : (isDark ? RGB(65, 75, 95) : RGB(180, 195, 215));
-        COLORREF togText = isSvcRunning ? (isDark ? RGB(52, 211, 153) : RGB(5, 150, 105))
-                                        : (isDark ? RGB(160, 170, 188) : RGB(70, 80, 100));
-        DrawRoundedRect(hdc, s_serviceToggleRect, 6, togBg, togBorder, 1);
+        // Service Toggle at Top-Right: Label + Fluent Toggle Switch
+        int switchW = 38;
+        int switchH = 20;
+        int switchX = width - 16 - switchW;
+        int switchY = contentTop + 1;
+        RECT switchRc = {switchX, switchY, switchX + switchW, switchY + switchH};
+
+        RECT lblRc = {switchX - 96, switchY, switchX - 8, switchY + switchH};
         SelectObject(hdc, smallFont);
-        SetTextColor(hdc, togText);
-        DrawTextW(hdc, isSvcRunning ? L"● ON" : L"○ OFF", -1, &s_serviceToggleRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        SetTextColor(hdc, isSvcRunning ? (isDark ? RGB(52, 211, 153) : RGB(5, 150, 105))
+                                       : (isDark ? RGB(160, 170, 188) : RGB(70, 80, 100)));
+        DrawTextW(hdc, isSvcRunning ? L"WinShare On" : L"WinShare Off", -1, &lblRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+
+        DrawShareToggleSwitch(hdc, switchRc, isSvcRunning, isDark, s_serviceToggleHovered);
+
+        // Entire hit-test rectangle covering label and toggle switch
+        s_serviceToggleRect = {lblRc.left, switchY - 2, switchRc.right + 2, switchY + switchH + 2};
 
         if (!isSvcRunning)
         {
-            DrawStandbyShareView(hdc, 14, contentTop + 20, width - 14, contentBottom, isDark, false, titleFont, secFont, iconFont);
+            DrawStandbyShareView(hdc, 14, contentTop + 24, width - 14, contentBottom, isDark, false, titleFont, secFont, iconFont);
             RestoreDC(hdc, savedDC);
             DeleteObject(iconFont);
             DeleteObject(fluentIconFont);
@@ -595,18 +633,16 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         int contentW = contentRight - contentLeft;
         int topY = 20;
 
-        // Service Toggle Pill at Top-Right
-        s_serviceToggleRect = {contentRight - 54, topY, contentRight, topY + 20};
-        COLORREF togBg = isSvcRunning ? (isDark ? RGB(16, 60, 40) : RGB(220, 248, 232))
-                                      : (isDark ? RGB(36, 42, 54) : RGB(225, 232, 244));
-        COLORREF togBorder = isSvcRunning ? RGB(16, 185, 129)
-                                          : (isDark ? RGB(65, 75, 95) : RGB(180, 195, 215));
-        COLORREF togText = isSvcRunning ? (isDark ? RGB(52, 211, 153) : RGB(5, 150, 105))
-                                        : (isDark ? RGB(160, 170, 188) : RGB(70, 80, 100));
-        DrawRoundedRect(hdc, s_serviceToggleRect, 6, togBg, togBorder, 1);
-        SelectObject(hdc, smallFont);
-        SetTextColor(hdc, togText);
-        DrawTextW(hdc, isSvcRunning ? L"● ON" : L"○ OFF", -1, &s_serviceToggleRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        // Service Toggle at Top-Right
+        int switchW = 36;
+        int switchH = 18;
+        int switchX = contentRight - switchW;
+        int switchY = topY + 1;
+        RECT switchRc = {switchX, switchY, switchX + switchW, switchY + switchH};
+
+        DrawShareToggleSwitch(hdc, switchRc, isSvcRunning, isDark, s_serviceToggleHovered);
+
+        s_serviceToggleRect = {switchX - 4, switchY - 2, switchRc.right + 2, switchY + switchH + 2};
 
         if (!isSvcRunning)
         {
@@ -911,7 +947,7 @@ bool HandleShareTabMouseMove(HWND hwnd, POINT pt)
     if (needRepaint && IsWindow(hwnd)) {
         InvalidateRect(hwnd, nullptr, FALSE);
     }
-    return (linkHov || peerHov != -1 || trayHov || compHov || closeHov || againHov);
+    return (linkHov || peerHov != -1 || trayHov || compHov || closeHov || againHov || togHov || enHov);
 }
 
 bool HandleShareTabClick(HWND hwnd, POINT pt)

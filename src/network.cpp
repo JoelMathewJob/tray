@@ -523,21 +523,56 @@ void NetworkManager::HttpServerLoop() {
         if (myName.empty()) myName = L"WinTray PC";
         std::string myNameUtf8 = WideToUtf8(myName);
 
+        auto escapeHtml = [](const std::string& data) {
+            std::string buffer;
+            buffer.reserve(data.size());
+            for (char c : data) {
+                switch (c) {
+                    case '&':  buffer.append("&amp;");       break;
+                    case '\"': buffer.append("&quot;");      break;
+                    case '\'': buffer.append("&#39;");       break;
+                    case '<':  buffer.append("&lt;");        break;
+                    case '>':  buffer.append("&gt;");        break;
+                    default:   buffer.push_back(c);          break;
+                }
+            }
+            return buffer;
+        };
+
         std::string itemsHtml = "";
         for (const auto& item : g_items) {
             if (item.isLoading) continue;
-            std::string nameUtf8 = WideToUtf8(item.name);
+
+            // Extract disk filename & extension to guarantee correct file type on phone
+            std::wstring realFileName = item.name;
+            size_t lastSlash = item.path.find_last_of(L"\\/");
+            std::wstring diskFileName = (lastSlash != std::wstring::npos) ? item.path.substr(lastSlash + 1) : item.path;
+            size_t diskDot = diskFileName.find_last_of(L".");
+            if (diskDot != std::wstring::npos && realFileName.find_last_of(L".") == std::wstring::npos) {
+                realFileName += diskFileName.substr(diskDot);
+            }
+            if (realFileName.empty()) realFileName = diskFileName;
+
+            std::string nameUtf8 = WideToUtf8(realFileName);
+            std::string safeName = escapeHtml(nameUtf8);
+            std::string itemIdStr = std::to_string(item.id);
+
             itemsHtml += "<div class='file-card'>";
             itemsHtml += "<div class='file-info'>";
             itemsHtml += "<div class='file-icon'>&#128196;</div>";
-            itemsHtml += "<div class='file-name'>" + nameUtf8 + "</div>";
+            itemsHtml += "<div class='file-name'>" + safeName + "</div>";
             itemsHtml += "</div>";
-            itemsHtml += "<a class='btn-download' href='/download?id=" + std::to_string(item.id) + "'>Download</a>";
+            itemsHtml += "<div class='file-actions'>";
+            itemsHtml += "<button class='btn-download' data-id='" + itemIdStr + "' data-name='" + safeName + "' onclick='triggerDownload(this)'>Download</button>";
+            itemsHtml += "<a class='btn-direct' href='/download?id=" + itemIdStr + "' download='" + safeName + "' title='Direct Save'>&#11015;</a>";
+            itemsHtml += "</div>";
             itemsHtml += "</div>";
         }
 
         if (itemsHtml.empty()) {
             itemsHtml = "<p class='empty-text'>No files currently in WinTray.</p>";
+        } else {
+            itemsHtml += "<p class='security-tip'>&#128274; Safe local network transfer. If your browser prompts on download, choose &quot;Keep anyway&quot;.</p>";
         }
 
         std::string html = R"raw(<!DOCTYPE html>
@@ -572,7 +607,13 @@ void NetworkManager::HttpServerLoop() {
         .file-info { display: flex; align-items: center; gap: 10px; overflow: hidden; }
         .file-icon { font-size: 20px; }
         .file-name { font-size: 14px; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
-        .btn-download { padding: 6px 14px; background: rgba(0, 180, 216, 0.15); border: 1px solid rgba(0, 180, 216, 0.3); border-radius: 10px; color: #38bdf8; font-size: 13px; text-decoration: none; font-weight: 600; }
+        .file-actions { display: flex; align-items: center; gap: 8px; }
+        .btn-download { padding: 6px 14px; background: rgba(0, 180, 216, 0.18); border: 1px solid rgba(0, 180, 216, 0.35); border-radius: 10px; color: #38bdf8; font-size: 13px; text-decoration: none; font-weight: 600; cursor: pointer; transition: all 0.2s; outline: none; }
+        .btn-download:hover { background: #0078d4; color: #fff; }
+        .btn-download:disabled { opacity: 0.6; cursor: wait; }
+        .btn-direct { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; color: #94a3b8; font-size: 14px; text-decoration: none; transition: all 0.2s; }
+        .btn-direct:hover { background: rgba(0, 180, 216, 0.25); color: #38bdf8; border-color: rgba(0, 180, 216, 0.4); }
+        .security-tip { font-size: 11px; color: #64748b; margin-top: 10px; text-align: center; }
         .empty-text { font-size: 13px; color: #64748b; text-align: center; padding: 16px 0; }
     </style>
 </head>
@@ -676,6 +717,56 @@ void NetworkManager::HttpServerLoop() {
 
             xhr.send(formData);
         }
+
+        async function triggerDownload(btn) {
+            const id = btn.getAttribute('data-id');
+            const filename = btn.getAttribute('data-name');
+            const origText = btn.textContent;
+            btn.textContent = 'Saving...';
+            btn.disabled = true;
+            try {
+                const url = '/download?id=' + encodeURIComponent(id);
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                
+                const contentType = resp.headers.get('content-type') || 'application/octet-stream';
+                const blobData = await resp.blob();
+                
+                // Construct blob with proper MIME type so mobile OS preserves the exact extension
+                const typedBlob = new Blob([blobData], { type: contentType });
+                const blobUrl = URL.createObjectURL(typedBlob);
+                
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = blobUrl;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(blobUrl);
+                }, 4000);
+                
+                btn.textContent = 'Saved!';
+                setTimeout(() => {
+                    btn.textContent = origText;
+                    btn.disabled = false;
+                }, 2000);
+            } catch (e) {
+                console.warn('Fetch download failed, falling back to direct navigation:', e);
+                // Fallback: direct download link
+                const fallbackLink = document.createElement('a');
+                fallbackLink.href = '/download?id=' + encodeURIComponent(id);
+                fallbackLink.download = filename;
+                document.body.appendChild(fallbackLink);
+                fallbackLink.click();
+                setTimeout(() => { document.body.removeChild(fallbackLink); }, 1000);
+                
+                btn.textContent = origText;
+                btn.disabled = false;
+            }
+        }
     </script>
 </body>
 </html>)raw";
@@ -768,7 +859,15 @@ void NetworkManager::HttpServerLoop() {
             return;
         }
 
-        int itemId = std::stoi(req.get_param_value("id"));
+        int itemId = 0;
+        try {
+            itemId = std::stoi(req.get_param_value("id"));
+        } catch (...) {
+            res.status = 400;
+            res.set_content("Invalid item ID", "text/plain");
+            return;
+        }
+
         std::wstring filePath;
         std::wstring fileName;
 
@@ -786,6 +885,20 @@ void NetworkManager::HttpServerLoop() {
             return;
         }
 
+        // Determine true disk filename and extension
+        size_t lastSlash = filePath.find_last_of(L"\\/");
+        std::wstring diskFileName = (lastSlash != std::wstring::npos) ? filePath.substr(lastSlash + 1) : filePath;
+        size_t diskDot = diskFileName.find_last_of(L".");
+        std::wstring realExtension = (diskDot != std::wstring::npos) ? diskFileName.substr(diskDot) : L"";
+
+        // Guarantee fileName has the real extension so phone OS never falls back to .bin
+        if (!realExtension.empty() && fileName.find_last_of(L".") == std::wstring::npos) {
+            fileName += realExtension;
+        }
+        if (fileName.empty()) {
+            fileName = diskFileName;
+        }
+
         std::ifstream file(filePath, std::ios::binary);
         if (!file.is_open()) {
             res.status = 404;
@@ -798,8 +911,75 @@ void NetworkManager::HttpServerLoop() {
         std::string content = buffer.str();
 
         std::string nameUtf8 = WideToUtf8(fileName);
-        res.set_header("Content-Disposition", "attachment; filename=\"" + nameUtf8 + "\"");
-        res.set_content(content, "application/octet-stream");
+
+        // Percent-encode for RFC 5987 / 6266 filename*=UTF-8''
+        std::string urlEncodedName = "";
+        for (unsigned char c : nameUtf8) {
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_') {
+                urlEncodedName += c;
+            } else {
+                char hex[8];
+                snprintf(hex, sizeof(hex), "%%%02X", c);
+                urlEncodedName += hex;
+            }
+        }
+
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Expose-Headers", "Content-Disposition, Content-Type, Content-Length");
+        res.set_header("X-Content-Type-Options", "nosniff");
+        res.set_header("Content-Disposition", "attachment; filename=\"" + nameUtf8 + "\"; filename*=UTF-8''" + urlEncodedName);
+
+        // Determine comprehensive MIME type from real file extension
+        std::string ext = "";
+        if (!realExtension.empty()) {
+            std::wstring wext = realExtension;
+            for (auto& c : wext) c = towlower(c);
+            ext = WideToUtf8(wext);
+        } else {
+            size_t dot = fileName.find_last_of(L".");
+            if (dot != std::wstring::npos) {
+                std::wstring wext = fileName.substr(dot);
+                for (auto& c : wext) c = towlower(c);
+                ext = WideToUtf8(wext);
+            }
+        }
+
+        std::string mime = "application/octet-stream";
+        if (ext == ".jpg" || ext == ".jpeg") mime = "image/jpeg";
+        else if (ext == ".png") mime = "image/png";
+        else if (ext == ".gif") mime = "image/gif";
+        else if (ext == ".webp") mime = "image/webp";
+        else if (ext == ".svg") mime = "image/svg+xml";
+        else if (ext == ".bmp") mime = "image/bmp";
+        else if (ext == ".ico") mime = "image/x-icon";
+        else if (ext == ".pdf") mime = "application/pdf";
+        else if (ext == ".mp4") mime = "video/mp4";
+        else if (ext == ".mov") mime = "video/quicktime";
+        else if (ext == ".mkv") mime = "video/x-matroska";
+        else if (ext == ".webm") mime = "video/webm";
+        else if (ext == ".avi") mime = "video/x-msvideo";
+        else if (ext == ".mp3") mime = "audio/mpeg";
+        else if (ext == ".m4a") mime = "audio/mp4";
+        else if (ext == ".wav") mime = "audio/wav";
+        else if (ext == ".flac") mime = "audio/flac";
+        else if (ext == ".ogg" || ext == ".opus") mime = "audio/ogg";
+        else if (ext == ".zip") mime = "application/zip";
+        else if (ext == ".rar") mime = "application/vnd.rar";
+        else if (ext == ".7z") mime = "application/x-7z-compressed";
+        else if (ext == ".tar" || ext == ".gz") mime = "application/gzip";
+        else if (ext == ".doc") mime = "application/msword";
+        else if (ext == ".docx") mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        else if (ext == ".xls") mime = "application/vnd.ms-excel";
+        else if (ext == ".xlsx") mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        else if (ext == ".ppt") mime = "application/vnd.ms-powerpoint";
+        else if (ext == ".pptx") mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        else if (ext == ".txt") mime = "text/plain; charset=utf-8";
+        else if (ext == ".csv") mime = "text/csv; charset=utf-8";
+        else if (ext == ".json") mime = "application/json";
+        else if (ext == ".html" || ext == ".htm") mime = "text/html; charset=utf-8";
+        else if (ext == ".apk") mime = "application/vnd.android.package-archive";
+
+        res.set_content(content, mime.c_str());
     });
 
     // POST /request-transfer -> PC-to-PC Handshake (Tray Notification)

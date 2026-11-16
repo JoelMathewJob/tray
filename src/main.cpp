@@ -1688,6 +1688,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
 {   
+    // Single-instance guard: Prevent multiple instances of WinTray from running concurrently
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE, L"Local\\WinTray_SingleInstance_Mutex_9F8B2C4D");
+    if (hMutex != nullptr && GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        CloseHandle(hMutex);
+        // Find existing instance window and bring it to foreground
+        HWND existingWnd = FindWindowW(L"WinTrayAppWindow", nullptr);
+        if (existingWnd)
+        {
+            SetForegroundWindow(existingWnd);
+            TriggerExpand(existingWnd);
+            CalculateTargetSize(true);
+            SetTimer(existingWnd, ANIM_TIMER_ID, 12, nullptr);
+            InvalidateRect(existingWnd, nullptr, TRUE);
+        }
+        return 0;
+    }
+
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
     OleInitialize(nullptr);
@@ -1734,5 +1752,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int)
     UnregisterHotKey(hwnd, HOTKEY_TOGGLE_ID);
     Gdiplus::GdiplusShutdown(gdiplusToken);
     OleUninitialize();
+
+    if (hMutex)
+    {
+        ReleaseMutex(hMutex);
+        CloseHandle(hMutex);
+    }
     return 0;
 }
