@@ -181,9 +181,13 @@ bool NetworkManager::Start() {
     if (m_running) return true;
     m_running = true;
 
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+
     m_udpBroadcastThread = std::thread(&NetworkManager::UdpBroadcastLoop, this);
     m_udpListenThread = std::thread(&NetworkManager::UdpListenLoop, this);
     m_httpServerThread = std::thread(&NetworkManager::HttpServerLoop, this);
+    m_subnetScanThread = std::thread(&NetworkManager::SubnetScanLoop, this);
 
     return true;
 }
@@ -210,7 +214,14 @@ void NetworkManager::Stop() {
 
     if (m_udpBroadcastThread.joinable()) m_udpBroadcastThread.join();
     if (m_udpListenThread.joinable()) m_udpListenThread.join();
+    if (m_subnetScanThread.joinable()) m_subnetScanThread.join();
     if (m_httpServerThread.joinable()) m_httpServerThread.join();
+
+    WSACleanup();
+}
+
+void NetworkManager::TriggerQuickScan() {
+    m_scanRequested = true;
 }
 
 void NetworkManager::UdpBroadcastLoop() {
@@ -439,6 +450,70 @@ void NetworkManager::HttpServerLoop() {
     // GET /favicon.ico -> 204 No Content
     svr.Get("/favicon.ico", [](const httplib::Request&, httplib::Response& res) {
         res.status = 204;
+    });
+
+    // GET /api/ping -> High-reliability LAN PC discovery endpoint
+    svr.Get("/api/ping", [this](const httplib::Request& req, httplib::Response& res) {
+        std::string remoteIp = req.remote_addr;
+        std::string myIp = GetLocalIP();
+        if (!remoteIp.empty() && remoteIp != "127.0.0.1" && remoteIp != myIp) {
+            int remotePort = 8088;
+            if (req.has_header("X-WinTray-Port")) {
+                try { remotePort = std::stoi(req.get_header_value("X-WinTray-Port")); } catch (...) {}
+            }
+            std::string senderName = req.has_header("X-WinTray-Name") ? req.get_header_value("X-WinTray-Name") : "";
+            std::string senderId = req.has_header("X-WinTray-Id") ? req.get_header_value("X-WinTray-Id") : "";
+            if (senderId != GetInstanceId()) {
+                if (senderName.empty()) senderName = "Nearby PC";
+                ULONGLONG now = GetTickCount64();
+                bool peerAdded = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_peersMutex);
+                    bool found = false;
+                    for (auto& p : g_peers) {
+                        if (p.ip == remoteIp) {
+                            p.name = Utf8ToWide(senderName);
+                            p.deviceType = "pc";
+                            p.port = remotePort;
+                            p.lastSeenTick = now;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        DiscoveredPeer peer;
+                        peer.ip = remoteIp;
+                        peer.name = Utf8ToWide(senderName);
+                        peer.deviceType = "pc";
+                        peer.port = remotePort;
+                        peer.lastSeenTick = now;
+                        g_peers.push_back(peer);
+                        peerAdded = true;
+                    }
+                }
+                if (peerAdded && g_mainHwnd && IsWindow(g_mainHwnd)) {
+                    InvalidateRect(g_mainHwnd, nullptr, FALSE);
+                }
+            }
+        }
+
+        std::wstring myName = g_settings.username;
+        if (myName.empty()) {
+            wchar_t host[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+            DWORD hlen = MAX_COMPUTERNAME_LENGTH + 1;
+            GetComputerNameW(host, &hlen);
+            myName = host;
+        }
+
+        json j;
+        j["app"] = "WinTray";
+        j["id"] = GetInstanceId();
+        j["name"] = WideToUtf8(myName);
+        j["ip"] = myIp;
+        j["device"] = "pc";
+        j["port"] = GetHttpPort();
+
+        res.set_content(j.dump(), "application/json");
     });
 
     // GET / -> Mobile Web Portal
@@ -851,4 +926,159 @@ bool NetworkManager::SendFileToPeer(const std::string& peerIp, const std::wstrin
         InvalidateRect(g_mainHwnd, nullptr, FALSE);
     }
     return true;
+}
+
+void NetworkManager::PingPeerHttp(const std::string& peerIp, int peerPort) {
+    httplib::Client cli(peerIp, peerPort);
+    cli.set_connection_timeout(1);
+    cli.set_read_timeout(1);
+
+    std::wstring myName = g_settings.username;
+    if (myName.empty()) {
+        wchar_t host[MAX_COMPUTERNAME_LENGTH + 1] = {0};
+        DWORD hlen = MAX_COMPUTERNAME_LENGTH + 1;
+        GetComputerNameW(host, &hlen);
+        myName = host;
+    }
+
+    httplib::Headers headers = {
+        {"X-WinTray-Port", std::to_string(GetHttpPort())},
+        {"X-WinTray-Name", WideToUtf8(myName)},
+        {"X-WinTray-Id", GetInstanceId()}
+    };
+
+    auto res = cli.Get("/api/ping", headers);
+    if (res && res.status == 200) {
+        try {
+            json j = json::parse(res.body);
+            if (j.value("app", "") == "WinTray") {
+                std::string senderId = j.value("id", "");
+                if (!senderId.empty() && senderId == GetInstanceId()) return;
+
+                std::string peerName = j.value("name", "Nearby PC");
+                std::string peerDev = j.value("device", "pc");
+                int port = j.value("port", peerPort);
+                ULONGLONG now = GetTickCount64();
+
+                bool peerAdded = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_peersMutex);
+                    bool found = false;
+                    for (auto& p : g_peers) {
+                        if (p.ip == peerIp) {
+                            p.name = Utf8ToWide(peerName);
+                            p.deviceType = peerDev;
+                            p.port = port;
+                            p.lastSeenTick = now;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        DiscoveredPeer peer;
+                        peer.ip = peerIp;
+                        peer.name = Utf8ToWide(peerName);
+                        peer.deviceType = peerDev;
+                        peer.port = port;
+                        peer.lastSeenTick = now;
+                        g_peers.push_back(peer);
+                        peerAdded = true;
+                    }
+                }
+                if (peerAdded && g_mainHwnd && IsWindow(g_mainHwnd)) {
+                    InvalidateRect(g_mainHwnd, nullptr, FALSE);
+                }
+            }
+        } catch (...) {}
+    }
+}
+
+void NetworkManager::SubnetScanLoop() {
+    while (m_running) {
+        auto adapters = GetLocalAdapters();
+        std::string myIp = GetLocalIP();
+
+        for (const auto& a : adapters) {
+            if (!m_running) break;
+            if (a.ip.empty() || a.ip == "127.0.0.1") continue;
+
+            size_t lastDot = a.ip.find_last_of('.');
+            if (lastDot == std::string::npos) continue;
+            std::string prefix = a.ip.substr(0, lastDot + 1);
+
+            int myLastOctet = 0;
+            try {
+                myLastOctet = std::stoi(a.ip.substr(lastDot + 1));
+            } catch (...) {}
+
+            const int scanPort = 8088;
+
+            // Batch in chunks of 60 sockets to stay safely within FD_SETSIZE (64)
+            for (int octetStart = 1; octetStart <= 254 && m_running; octetStart += 60) {
+                int octetEnd = std::min(octetStart + 59, 254);
+                std::vector<std::pair<SOCKET, std::string>> sockList;
+
+                for (int octet = octetStart; octet <= octetEnd; ++octet) {
+                    if (octet == myLastOctet) continue;
+
+                    std::string targetIp = prefix + std::to_string(octet);
+                    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                    if (s == INVALID_SOCKET) continue;
+
+                    u_long nonBlocking = 1;
+                    ioctlsocket(s, FIONBIO, &nonBlocking);
+
+                    sockaddr_in targetAddr = {};
+                    targetAddr.sin_family = AF_INET;
+                    targetAddr.sin_port = htons(scanPort);
+                    inet_pton(AF_INET, targetIp.c_str(), &targetAddr.sin_addr);
+
+                    connect(s, reinterpret_cast<sockaddr*>(&targetAddr), sizeof(targetAddr));
+                    sockList.push_back({s, targetIp});
+                }
+
+                if (sockList.empty()) continue;
+
+                fd_set writeSet;
+                FD_ZERO(&writeSet);
+                for (const auto& item : sockList) {
+                    FD_SET(item.first, &writeSet);
+                }
+
+                timeval tv;
+                tv.tv_sec = 0;
+                tv.tv_usec = 250000; // 250ms timeout per batch
+
+                int ready = select(0, nullptr, &writeSet, nullptr, &tv);
+                if (ready > 0) {
+                    for (const auto& item : sockList) {
+                        if (FD_ISSET(item.first, &writeSet)) {
+                            int sockErr = 0;
+                            int errLen = sizeof(sockErr);
+                            getsockopt(item.first, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&sockErr), &errLen);
+                            if (sockErr == 0) {
+                                std::string foundIp = item.second;
+                                std::thread([this, foundIp, scanPort]() {
+                                    PingPeerHttp(foundIp, scanPort);
+                                }).detach();
+                            }
+                        }
+                    }
+                }
+
+                for (const auto& item : sockList) {
+                    closesocket(item.first);
+                }
+            }
+        }
+
+        // Wait up to 4 seconds, waking early if m_scanRequested
+        for (int i = 0; i < 40 && m_running; ++i) {
+            if (m_scanRequested) {
+                m_scanRequested = false;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+    }
 }

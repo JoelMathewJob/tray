@@ -23,6 +23,8 @@
 
 namespace httplib {
 
+using Headers = std::map<std::string, std::string>;
+
 struct MultipartFormData {
     std::string name;
     std::string content;
@@ -62,6 +64,10 @@ struct Request {
         auto it = params.find(key);
         if (it != params.end()) return it->second;
         return "";
+    }
+
+    bool has_header(const std::string& key) const {
+        return headers.find(key) != headers.end();
     }
 
     std::string get_header_value(const std::string& key) const {
@@ -458,6 +464,10 @@ public:
 
     Result Get(const std::string& path) {
         std::map<std::string, std::string> headers;
+        return sendRequest("GET", path, headers, "");
+    }
+
+    Result Get(const std::string& path, const Headers& headers) {
         return sendRequest("GET", path, headers, "");
     }
 

@@ -288,10 +288,13 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
             } else {
                 for (size_t i = 0; i < currentPeers.size(); ++i) {
                     const auto& peer = currentPeers[i];
-                    unsigned int h = 0;
-                    for (char c : peer.ip) h = h * 31 + static_cast<unsigned char>(c);
-                    float angle = static_cast<float>(h % 360) * (3.14159265f / 180.0f);
-                    float dist = 40.0f + static_cast<float>(h % 22);
+                    float angle;
+                    if (currentPeers.size() == 1) {
+                        angle = -0.785398f;
+                    } else {
+                        angle = static_cast<float>(i) * (6.283185f / currentPeers.size()) - 1.570796f;
+                    }
+                    float dist = 48.0f;
 
                     int px = radarCenterX + static_cast<int>(dist * cos(angle));
                     int py = radarCenterY + static_cast<int>(dist * sin(angle));
@@ -468,10 +471,13 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
 
             for (size_t i = 0; i < currentPeers.size(); ++i) {
                 const auto& peer = currentPeers[i];
-                unsigned int h = 0;
-                for (char c : peer.ip) h = h * 31 + static_cast<unsigned char>(c);
-                float angle = static_cast<float>(h % 360) * (3.14159265f / 180.0f);
-                float dist = 38.0f + static_cast<float>(h % 22);
+                float angle;
+                if (currentPeers.size() == 1) {
+                    angle = -0.785398f;
+                } else {
+                    angle = static_cast<float>(i) * (6.283185f / currentPeers.size()) - 1.570796f;
+                }
+                float dist = 42.0f;
 
                 int px = radarCenterX + static_cast<int>(dist * cos(angle));
                 int py = radarCenterY + static_cast<int>(dist * sin(angle));
@@ -662,6 +668,7 @@ void OpenShareDialog(HWND parentHwnd, const std::wstring &initialFilePath)
 
     if (g_mainHwnd && IsWindow(g_mainHwnd)) {
         g_activeTab = TAB_SHARE;
+        NetworkManager::Instance().TriggerQuickScan();
         TriggerExpand(g_mainHwnd);
         CalculateTargetSize(true);
         SetTimer(g_mainHwnd, ANIM_TIMER_ID, 12, nullptr);

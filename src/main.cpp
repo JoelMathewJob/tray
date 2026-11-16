@@ -879,6 +879,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             if (g_activeTab != TAB_SHARE)
             {
                 g_activeTab = TAB_SHARE;
+                NetworkManager::Instance().TriggerQuickScan();
                 CalculateTargetSize(true);
                 SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
                 InvalidateRect(hwnd, nullptr, TRUE);
