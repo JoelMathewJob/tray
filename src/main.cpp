@@ -45,7 +45,12 @@ static bool g_mouseTrackingActive = false;
 static bool g_isDraggingWindow = false;
 static bool g_dragWindowCandidate = false;
 static POINT g_dragWindowStartCursor = {0, 0};
+static POINT g_dragWindowGrabOffset = {0, 0};
 static float g_dragWindowStartRatio = 0.5f;
+
+static bool g_snapAnimActive = false;
+static float g_curX = 0.0f;
+static float g_curY = 0.0f;
 
 static float g_curW = COLLAPSED_W;
 static float g_curH = COLLAPSED_H;
@@ -319,35 +324,73 @@ void SyncTrayOrientation(HWND hwnd)
 
 void UpdateTrayWindowGeometry(HWND hwnd)
 {
+    if (g_isDraggingWindow)
+        return;
+
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
 
     int w = static_cast<int>(std::lround(g_curW));
     int h = static_cast<int>(std::lround(g_curH));
-    int posX = 0, posY = 0;
+    int targetPosX = 0, targetPosY = 0;
 
     int topOffset = (g_settings.notchStyle == NOTCH_FLOATING && g_settings.dockEdge == EDGE_TOP) ? 8 : 0;
+    int maxPosX = std::max(0, screenW - w);
+    int maxPosY = std::max(0, screenH - h);
 
     switch (g_settings.dockEdge)
     {
     case EDGE_TOP:
-        posX = std::clamp(static_cast<int>(screenW * g_settings.dockOffsetRatio - w / 2), 0, screenW - w);
-        posY = topOffset;
+        targetPosX = std::clamp(static_cast<int>(screenW * g_settings.dockOffsetRatio - w / 2), 0, maxPosX);
+        targetPosY = topOffset;
         break;
     case EDGE_LEFT:
-        posX = (g_settings.notchStyle == NOTCH_FLOATING) ? 8 : 0;
-        posY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, screenH - h);
+        targetPosX = (g_settings.notchStyle == NOTCH_FLOATING) ? 8 : 0;
+        targetPosY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, maxPosY);
         break;
     case EDGE_RIGHT:
-        posX = screenW - w - ((g_settings.notchStyle == NOTCH_FLOATING) ? 8 : 0);
-        posY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, screenH - h);
+        targetPosX = maxPosX - ((g_settings.notchStyle == NOTCH_FLOATING) ? 8 : 0);
+        targetPosY = std::clamp(static_cast<int>(screenH * g_settings.dockOffsetRatio - h / 2), 0, maxPosY);
         break;
     }
 
-    SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, w, h, SWP_NOACTIVATE | SWP_NOREDRAW);
+    int posX = targetPosX;
+    int posY = targetPosY;
 
-    // Cleared GDI region: restores Windows 11 DWM native hardware-accelerated corner rounding (DWMWCP_ROUND)
-    SetWindowRgn(hwnd, NULL, TRUE);
+    if (g_snapAnimActive)
+    {
+        float diffX = static_cast<float>(targetPosX) - g_curX;
+        float diffY = static_cast<float>(targetPosY) - g_curY;
+        if (std::fabs(diffX) > 1.0f || std::fabs(diffY) > 1.0f)
+        {
+            g_curX += diffX * 0.22f;
+            g_curY += diffY * 0.22f;
+            posX = static_cast<int>(std::lround(g_curX));
+            posY = static_cast<int>(std::lround(g_curY));
+
+            // While gliding mid-air, maintain rounded pill region
+            int pillRadius = std::min(28, std::min(w, h) / 2);
+            HRGN pillRgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, pillRadius * 2, pillRadius * 2);
+            SetWindowRgn(hwnd, pillRgn, TRUE);
+        }
+        else
+        {
+            g_curX = static_cast<float>(targetPosX);
+            g_curY = static_cast<float>(targetPosY);
+            g_snapAnimActive = false;
+            // Docked: restores Windows 11 DWM native hardware-accelerated corner rounding
+            SetWindowRgn(hwnd, NULL, TRUE);
+        }
+    }
+    else
+    {
+        g_curX = static_cast<float>(posX);
+        g_curY = static_cast<float>(posY);
+        // Cleared GDI region: restores Windows 11 DWM native hardware-accelerated corner rounding (DWMWCP_ROUND)
+        SetWindowRgn(hwnd, NULL, TRUE);
+    }
+
+    SetWindowPos(hwnd, HWND_TOPMOST, posX, posY, w, h, SWP_NOACTIVATE | SWP_NOREDRAW);
 }
 
 void PruneMissingItems(HWND hwnd)
@@ -655,11 +698,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 needsRedraw = true;
             }
 
-            if (!needsRedraw && g_curW == g_targetW && g_curH == g_targetH)
-                KillTimer(hwnd, ANIM_TIMER_ID);
-
             UpdateTrayWindowGeometry(hwnd);
             InvalidateRect(hwnd, nullptr, FALSE);
+
+            if (!needsRedraw && g_curW == g_targetW && g_curH == g_targetH && !g_snapAnimActive)
+                KillTimer(hwnd, ANIM_TIMER_ID);
         }
         return 0;
     }
@@ -700,26 +743,37 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             int deltaX = curPt.x - g_dragWindowStartCursor.x;
             int deltaY = curPt.y - g_dragWindowStartCursor.y;
 
-            // Require an intentional drag of at least 8 pixels before moving the window
-            if (!g_isDraggingWindow && (std::abs(deltaX) > 8 || std::abs(deltaY) > 8))
+            // Require an intentional drag of at least 6 pixels before moving the window
+            if (!g_isDraggingWindow && (std::abs(deltaX) > 6 || std::abs(deltaY) > 6))
             {
                 g_isDraggingWindow = true;
+                g_snapAnimActive = false;
             }
 
             if (g_isDraggingWindow)
             {
-                int screenW = GetSystemMetrics(SM_CXSCREEN), screenH = GetSystemMetrics(SM_CYSCREEN);
-                if (g_settings.dockEdge == EDGE_TOP)
-                {
-                    float deltaRatio = static_cast<float>(deltaX) / screenW;
-                    g_settings.dockOffsetRatio = std::clamp(g_dragWindowStartRatio + deltaRatio, 0.1f, 0.9f);
-                }
-                else
-                {
-                    float deltaRatio = static_cast<float>(deltaY) / screenH;
-                    g_settings.dockOffsetRatio = std::clamp(g_dragWindowStartRatio + deltaRatio, 0.1f, 0.9f);
-                }
-                UpdateTrayWindowGeometry(hwnd);
+                int screenW = GetSystemMetrics(SM_CXSCREEN);
+                int screenH = GetSystemMetrics(SM_CYSCREEN);
+                int w = static_cast<int>(std::lround(g_curW));
+                int h = static_cast<int>(std::lround(g_curH));
+
+                int newX = curPt.x - g_dragWindowGrabOffset.x;
+                int newY = curPt.y - g_dragWindowGrabOffset.y;
+
+                newX = std::clamp(newX, 0, std::max(0, screenW - w));
+                newY = std::clamp(newY, 0, std::max(0, screenH - h));
+
+                g_curX = static_cast<float>(newX);
+                g_curY = static_cast<float>(newY);
+
+                SetWindowPos(hwnd, HWND_TOPMOST, newX, newY, w, h, SWP_NOACTIVATE | SWP_NOREDRAW);
+
+                // Dynamically round all 4 corners so it looks like a floating pill mid-air
+                int pillRadius = std::min(28, std::min(w, h) / 2);
+                HRGN pillRgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, pillRadius * 2, pillRadius * 2);
+                SetWindowRgn(hwnd, pillRgn, TRUE);
+
+                InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
         }
@@ -820,6 +874,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     case WM_MOUSELEAVE:
     {
+        if (g_isDraggingWindow || g_dragWindowCandidate)
+            return 0;
+
         g_mouseTrackingActive = false;
         g_hoveredIndex = -1;
         g_settingsHovered = false;
@@ -831,12 +888,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         g_tabNotificationsHovered = false;
         g_isTrackingDrag = false;
         g_dragCandidateIndex = -1;
-        g_isDraggingWindow = false;
-        g_dragWindowCandidate = false;
         HandleQuickControlsMouseUp(hwnd);
         HandleMusicPlayerMouseUp(hwnd);
 
-        if (!g_isMenuOpen && g_isExpanded)
+        if (!g_isMenuOpen && g_isExpanded && !g_snapAnimActive)
         {
             g_isExpanded = false;
             g_scrollOffset = 0.0f;
@@ -856,15 +911,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         if (!g_isExpanded)
         {
-            if (GetPendingNotificationCount() > 0)
-                g_activeTab = TAB_NOTIFICATIONS;
-            else if (g_media.hasActiveSession && g_media.isPlaying)
-                g_activeTab = TAB_MUSIC;
-
-            TriggerExpand(hwnd);
-            CalculateTargetSize(true);
-            SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            g_dragWindowCandidate = true;
+            g_isDraggingWindow = false;
+            GetCursorPos(&g_dragWindowStartCursor);
+            RECT winRect;
+            GetWindowRect(hwnd, &winRect);
+            g_dragWindowGrabOffset.x = g_dragWindowStartCursor.x - winRect.left;
+            g_dragWindowGrabOffset.y = g_dragWindowStartCursor.y - winRect.top;
+            g_dragWindowStartRatio = g_settings.dockOffsetRatio;
+            SetCapture(hwnd);
             return 0;
         }
 
@@ -1024,6 +1079,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
             g_dragWindowCandidate = true;
             g_isDraggingWindow = false;
             GetCursorPos(&g_dragWindowStartCursor);
+            RECT winRect;
+            GetWindowRect(hwnd, &winRect);
+            g_dragWindowGrabOffset.x = g_dragWindowStartCursor.x - winRect.left;
+            g_dragWindowGrabOffset.y = g_dragWindowStartCursor.y - winRect.top;
             g_dragWindowStartRatio = g_settings.dockOffsetRatio;
             SetCapture(hwnd);
             for (auto &item : g_items)
@@ -1061,7 +1120,72 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             if (g_isDraggingWindow)
             {
+                POINT pt;
+                GetCursorPos(&pt);
+                int screenW = GetSystemMetrics(SM_CXSCREEN);
+                int screenH = GetSystemMetrics(SM_CYSCREEN);
+
+                int curX = static_cast<int>(pt.x);
+                int curY = static_cast<int>(pt.y);
+
+                // Magnetic Edge Snapping: calculate distance to Top, Left, and Right edges
+                int distTop = std::max(0, curY);
+                int distLeft = std::max(0, curX);
+                int distRight = std::max(0, screenW - curX);
+
+                int newEdge = EDGE_TOP;
+                int minDist = distTop;
+                if (distLeft < minDist)
+                {
+                    minDist = distLeft;
+                    newEdge = EDGE_LEFT;
+                }
+                if (distRight < minDist)
+                {
+                    minDist = distRight;
+                    newEdge = EDGE_RIGHT;
+                }
+
+                // Update dockOffsetRatio (clamped between 0.1f and 0.9f)
+                if (newEdge == EDGE_TOP)
+                {
+                    float ratio = static_cast<float>(curX) / static_cast<float>(screenW);
+                    g_settings.dockOffsetRatio = std::clamp(ratio, 0.1f, 0.9f);
+                }
+                else
+                {
+                    float ratio = static_cast<float>(curY) / static_cast<float>(screenH);
+                    g_settings.dockOffsetRatio = std::clamp(ratio, 0.1f, 0.9f);
+                }
+
+                g_settings.dockEdge = newEdge;
                 SaveSettings();
+
+                // Start magnetic glide & orientation morphing animation
+                RECT curRc;
+                GetWindowRect(hwnd, &curRc);
+                g_curX = static_cast<float>(curRc.left);
+                g_curY = static_cast<float>(curRc.top);
+                g_snapAnimActive = true;
+
+                CalculateTargetSize(g_isExpanded);
+                SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+            }
+            else
+            {
+                // If it was just a click when collapsed, expand it
+                if (!g_isExpanded)
+                {
+                    if (GetPendingNotificationCount() > 0)
+                        g_activeTab = TAB_NOTIFICATIONS;
+                    else if (g_media.hasActiveSession && g_media.isPlaying)
+                        g_activeTab = TAB_MUSIC;
+
+                    TriggerExpand(hwnd);
+                    CalculateTargetSize(true);
+                    SetTimer(hwnd, ANIM_TIMER_ID, 12, nullptr);
+                    InvalidateRect(hwnd, nullptr, TRUE);
+                }
             }
             g_isDraggingWindow = false;
             g_dragWindowCandidate = false;

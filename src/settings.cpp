@@ -141,6 +141,15 @@ void LoadSettings()
     g_settings.hotkeyVk = GetPrivateProfileIntW(L"Hotkeys", L"Vk", 'T', g_iniPath.c_str());
     g_settings.dockEdge = GetPrivateProfileIntW(L"Window", L"DockEdge", EDGE_TOP, g_iniPath.c_str());
 
+    wchar_t ratioBuf[32] = {0};
+    GetPrivateProfileStringW(L"Window", L"DockOffsetRatio", L"0.5", ratioBuf, 32, g_iniPath.c_str());
+    try {
+        g_settings.dockOffsetRatio = std::stof(ratioBuf);
+    } catch (...) {
+        g_settings.dockOffsetRatio = 0.5f;
+    }
+    g_settings.dockOffsetRatio = std::clamp(g_settings.dockOffsetRatio, 0.1f, 0.9f);
+
     // Quick Controls customization
     g_settings.qcShowWifi = GetPrivateProfileIntW(L"QuickControls", L"ShowWifi", 1, g_iniPath.c_str()) == 1;
     g_settings.qcShowBluetooth = GetPrivateProfileIntW(L"QuickControls", L"ShowBluetooth", 1, g_iniPath.c_str()) == 1;
@@ -198,6 +207,8 @@ void SaveSettings()
     WritePrivateProfileStringW(L"Hotkeys", L"Vk", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%d", g_settings.dockEdge);
     WritePrivateProfileStringW(L"Window", L"DockEdge", buf, g_iniPath.c_str());
+    swprintf_s(buf, L"%.4f", g_settings.dockOffsetRatio);
+    WritePrivateProfileStringW(L"Window", L"DockOffsetRatio", buf, g_iniPath.c_str());
 
     // Quick controls
     WritePrivateProfileStringW(L"QuickControls", L"ShowWifi", g_settings.qcShowWifi ? L"1" : L"0", g_iniPath.c_str());
