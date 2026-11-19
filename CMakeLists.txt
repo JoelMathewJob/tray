@@ -40,6 +40,7 @@ file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/src/version_info.h" "${VERSION_HEADER}")
 set(SOURCES
     src/main.cpp
     src/state.h
+    src/ui_common.h
     src/settings.h
     src/settings.cpp
     src/updater.h
@@ -52,8 +53,6 @@ set(SOURCES
     src/actions.cpp
     src/player.h
     src/player.cpp
-    src/appbar.h
-    src/appbar.cpp
     src/blur.h
     src/blur.cpp
     src/network.h

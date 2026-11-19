@@ -191,37 +191,6 @@ static std::string s_hoveredBtnId = "";
 static bool s_hoveredBtnIsAccept = false;
 static std::string s_hoveredCardCloseId = "";
 
-static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
-{
-    return CreateFontW(-sizePx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-}
-
-static void DrawRoundedRect(HDC hdc, const RECT &r, int radius, COLORREF bg, COLORREF border, int borderWidth = 1)
-{
-    HBRUSH brush = CreateSolidBrush(bg);
-    HPEN pen = (borderWidth > 0) ? CreatePen(PS_SOLID, borderWidth, border) : CreatePen(PS_NULL, 0, 0);
-    HGDIOBJ oldBrush = SelectObject(hdc, brush);
-    HGDIOBJ oldPen = SelectObject(hdc, pen);
-
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-
-    SelectObject(hdc, oldBrush);
-    SelectObject(hdc, oldPen);
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
-static std::wstring FormatSize(ULONGLONG bytes) {
-    if (bytes < 1024) return std::to_wstring(bytes) + L" B";
-    if (bytes < 1024 * 1024) return std::to_wstring(bytes / 1024) + L" KB";
-    double mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
-    wchar_t buf[32];
-    swprintf_s(buf, L"%.1f MB", mb);
-    return buf;
-}
-
 static std::wstring FormatTimeAgo(ULONGLONG timestamp) {
     ULONGLONG now = GetTickCount64();
     if (now < timestamp) return L"Just now";
@@ -416,7 +385,7 @@ void RenderNotificationsTab(HDC hdc, int width, int height, bool isDark, int doc
             RECT fileSizeRc = {fileBoxRc.right - 65, fileBoxRc.top, fileBoxRc.right - 6, fileBoxRc.bottom};
             SelectObject(hdc, secFont);
             SetTextColor(hdc, isDark ? RGB(140, 152, 175) : RGB(60, 70, 88));
-            std::wstring sizeStr = FormatSize(item.fileSize);
+            std::wstring sizeStr = FormatFileSize(item.fileSize);
             DrawTextW(hdc, sizeStr.c_str(), -1, &fileSizeRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
             // Action Buttons / Status

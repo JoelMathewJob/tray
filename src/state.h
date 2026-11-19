@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <mutex>
+#include "ui_common.h"
 
 constexpr float COLLAPSED_W = 210.0f;
 constexpr float COLLAPSED_H = 26.0f;

@@ -73,59 +73,6 @@ static void EnsureQrCached(const std::string& url) {
     }
 }
 
-static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
-{
-    return CreateFontW(-sizePx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-}
-
-static void DrawRoundedRect(HDC hdc, const RECT &r, int radius, COLORREF bg, COLORREF border, int borderWidth = 1)
-{
-    HBRUSH brush = CreateSolidBrush(bg);
-    HPEN pen = (borderWidth > 0) ? CreatePen(PS_SOLID, borderWidth, border) : CreatePen(PS_NULL, 0, 0);
-    HGDIOBJ oldB = SelectObject(hdc, brush);
-    HGDIOBJ oldP = SelectObject(hdc, pen);
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-    SelectObject(hdc, oldB);
-    SelectObject(hdc, oldP);
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
-static void DrawShareToggleSwitch(HDC hdc, const RECT &r, bool isOn, bool isDark, bool isHovered)
-{
-    int w = r.right - r.left;
-    int h = r.bottom - r.top;
-    int radius = h / 2;
-
-    COLORREF trackBg, trackBorder, knobColor;
-    if (isOn)
-    {
-        trackBg = isHovered ? RGB(5, 165, 115) : RGB(16, 185, 129);
-        trackBorder = isHovered ? RGB(4, 140, 98) : RGB(13, 148, 103);
-        knobColor = RGB(255, 255, 255);
-    }
-    else
-    {
-        trackBg = isDark ? (isHovered ? RGB(52, 60, 76) : RGB(42, 48, 62))
-                         : (isHovered ? RGB(198, 208, 224) : RGB(214, 222, 234));
-        trackBorder = isDark ? (isHovered ? RGB(80, 92, 115) : RGB(65, 75, 95))
-                             : (isHovered ? RGB(165, 178, 198) : RGB(180, 192, 210));
-        knobColor = isDark ? RGB(190, 200, 215) : RGB(255, 255, 255);
-    }
-
-    DrawRoundedRect(hdc, r, radius, trackBg, trackBorder, 1);
-
-    int knobMargin = 2;
-    int knobD = h - knobMargin * 2;
-    int knobX = isOn ? (r.right - knobMargin - knobD) : (r.left + knobMargin);
-    int knobY = r.top + knobMargin;
-
-    RECT knobRc = {knobX, knobY, knobX + knobD, knobY + knobD};
-    DrawRoundedRect(hdc, knobRc, knobD / 2, knobColor, knobColor, 0);
-}
-
 static std::wstring GetFileNameOnly(const std::wstring& path)
 {
     size_t last = path.find_last_of(L"\\/");
@@ -334,7 +281,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
                                        : (isDark ? RGB(160, 170, 188) : RGB(70, 80, 100)));
         DrawTextW(hdc, isSvcRunning ? L"WinShare On" : L"WinShare Off", -1, &lblRc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
 
-        DrawShareToggleSwitch(hdc, switchRc, isSvcRunning, isDark, s_serviceToggleHovered);
+        DrawToggleSwitch(hdc, switchRc, isSvcRunning, isDark, s_serviceToggleHovered);
 
         // Entire hit-test rectangle covering label and toggle switch
         s_serviceToggleRect = {lblRc.left, switchY - 2, switchRc.right + 2, switchY + switchH + 2};
@@ -640,7 +587,7 @@ void RenderShareTab(HDC hdc, int width, int height, bool isDark, int dockEdge)
         int switchY = topY + 1;
         RECT switchRc = {switchX, switchY, switchX + switchW, switchY + switchH};
 
-        DrawShareToggleSwitch(hdc, switchRc, isSvcRunning, isDark, s_serviceToggleHovered);
+        DrawToggleSwitch(hdc, switchRc, isSvcRunning, isDark, s_serviceToggleHovered);
 
         s_serviceToggleRect = {switchX - 4, switchY - 2, switchRc.right + 2, switchY + switchH + 2};
 

@@ -141,6 +141,15 @@ void LoadSettings()
     g_settings.hotkeyVk = GetPrivateProfileIntW(L"Hotkeys", L"Vk", 'T', g_iniPath.c_str());
     g_settings.dockEdge = GetPrivateProfileIntW(L"Window", L"DockEdge", EDGE_TOP, g_iniPath.c_str());
 
+    wchar_t ratioBuf[32] = {0};
+    GetPrivateProfileStringW(L"Window", L"DockOffsetRatio", L"0.5", ratioBuf, 32, g_iniPath.c_str());
+    try {
+        g_settings.dockOffsetRatio = std::stof(ratioBuf);
+    } catch (...) {
+        g_settings.dockOffsetRatio = 0.5f;
+    }
+    g_settings.dockOffsetRatio = std::clamp(g_settings.dockOffsetRatio, 0.1f, 0.9f);
+
     // Quick Controls customization
     g_settings.qcShowWifi = GetPrivateProfileIntW(L"QuickControls", L"ShowWifi", 1, g_iniPath.c_str()) == 1;
     g_settings.qcShowBluetooth = GetPrivateProfileIntW(L"QuickControls", L"ShowBluetooth", 1, g_iniPath.c_str()) == 1;
@@ -198,6 +207,8 @@ void SaveSettings()
     WritePrivateProfileStringW(L"Hotkeys", L"Vk", buf, g_iniPath.c_str());
     swprintf_s(buf, L"%d", g_settings.dockEdge);
     WritePrivateProfileStringW(L"Window", L"DockEdge", buf, g_iniPath.c_str());
+    swprintf_s(buf, L"%.4f", g_settings.dockOffsetRatio);
+    WritePrivateProfileStringW(L"Window", L"DockOffsetRatio", buf, g_iniPath.c_str());
 
     // Quick controls
     WritePrivateProfileStringW(L"QuickControls", L"ShowWifi", g_settings.qcShowWifi ? L"1" : L"0", g_iniPath.c_str());
@@ -291,57 +302,6 @@ static std::wstring GetHotkeyDisplayString(int mods, int vk)
             s += L"Key " + std::to_wstring(vk);
     }
     return s;
-}
-
-static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
-{
-    return CreateFontW(-sizePx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-}
-
-static void DrawRoundedRect(HDC hdc, const RECT &r, int radius, COLORREF bg, COLORREF border, int borderWidth = 1)
-{
-    HBRUSH brush = CreateSolidBrush(bg);
-    HPEN pen = (borderWidth > 0) ? CreatePen(PS_SOLID, borderWidth, border) : CreatePen(PS_NULL, 0, 0);
-    HGDIOBJ oldB = SelectObject(hdc, brush);
-    HGDIOBJ oldP = SelectObject(hdc, pen);
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-    SelectObject(hdc, oldB);
-    SelectObject(hdc, oldP);
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
-static void DrawToggleSwitch(HDC hdc, const RECT &r, bool isOn, bool isDark)
-{
-    int w = r.right - r.left;
-    int h = r.bottom - r.top;
-    int radius = h / 2;
-
-    COLORREF trackBg, trackBorder, knobColor;
-    if (isOn)
-    {
-        trackBg = RGB(24, 120, 242);
-        trackBorder = RGB(20, 100, 210);
-        knobColor = RGB(255, 255, 255);
-    }
-    else
-    {
-        trackBg = isDark ? RGB(40, 44, 56) : RGB(218, 224, 235);
-        trackBorder = isDark ? RGB(65, 72, 90) : RGB(185, 195, 210);
-        knobColor = isDark ? RGB(200, 205, 220) : RGB(255, 255, 255);
-    }
-
-    DrawRoundedRect(hdc, r, radius, trackBg, trackBorder, 1);
-
-    int knobMargin = 3;
-    int knobD = h - knobMargin * 2;
-    int knobX = isOn ? (r.right - knobMargin - knobD) : (r.left + knobMargin);
-    int knobY = r.top + knobMargin;
-
-    RECT knobRc = {knobX, knobY, knobX + knobD, knobY + knobD};
-    DrawRoundedRect(hdc, knobRc, knobD / 2, knobColor, knobColor, 0);
 }
 
 static void DrawSegmentedPills(HDC hdc, const RECT &r, const std::vector<std::wstring> &options, int selectedIdx, RECT *outPillRects, bool isDark)

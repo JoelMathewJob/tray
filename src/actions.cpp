@@ -37,28 +37,6 @@ bool g_actionLockHovered = false;
 static IAudioMeterInformation *s_pAudioMeter = nullptr;
 static float s_smoothedPeak = 0.0f;
 
-// Helper: Create ClearType Font
-static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
-{
-    return CreateFontW(-sizePx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-}
-
-// Helper: Draw Rounded Rectangle
-static void DrawRoundedRect(HDC hdc, const RECT &r, int radius, COLORREF bg, COLORREF border, int borderWidth = 1)
-{
-    HBRUSH brush = CreateSolidBrush(bg);
-    HPEN pen = (borderWidth > 0) ? CreatePen(PS_SOLID, borderWidth, border) : CreatePen(PS_NULL, 0, 0);
-    HGDIOBJ oldB = SelectObject(hdc, brush);
-    HGDIOBJ oldP = SelectObject(hdc, pen);
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-    SelectObject(hdc, oldB);
-    SelectObject(hdc, oldP);
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
 // Notification Toast Trigger
 void ShowActionToast(const std::wstring &msg, const wchar_t *glyph, COLORREF iconCol)
 {

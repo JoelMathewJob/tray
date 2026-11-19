@@ -950,14 +950,6 @@ void SetPowerMode(PowerMode mode)
     }
 }
 
-// ClearType Font Creation (Smooth, high-contrast, subpixel rendering)
-static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
-{
-    return CreateFontW(-sizePx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-}
-
 void RenderTopNavBar(HDC hdc, int width, int height, bool isDark, int activeTab, bool settingsHovered, int dockEdge)
 {
     bool isLeft = (dockEdge == EDGE_LEFT);

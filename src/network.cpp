@@ -95,28 +95,6 @@ static std::vector<LocalAdapterInfo> GetLocalAdapters() {
     return result;
 }
 
-static std::string WideToUtf8(const std::wstring& wstr) {
-    if (wstr.empty()) return "";
-    int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-    std::string str(sizeNeeded, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), &str[0], sizeNeeded, nullptr, nullptr);
-    return str;
-}
-
-static std::wstring Utf8ToWide(const std::string& str) {
-    if (str.empty()) return L"";
-    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0);
-    std::wstring wstr(sizeNeeded, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), (int)str.size(), &wstr[0], sizeNeeded);
-    return wstr;
-}
-
-static std::wstring FormatFileSize(ULONGLONG bytes) {
-    if (bytes < 1024) return std::to_wstring(bytes) + L" B";
-    if (bytes < 1024 * 1024) return std::to_wstring(bytes / 1024) + L" KB";
-    return std::to_wstring(bytes / (1024 * 1024)) + L" MB";
-}
-
 NetworkManager& NetworkManager::Instance() {
     static NetworkManager s_instance;
     return s_instance;
