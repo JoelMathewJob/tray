@@ -66,26 +66,6 @@ void InitDefaultFavorites()
     g_mediaFavorites.push_back({L"SoundCloud", L"soundcloud.com", L"https://soundcloud.com", L"\xE8D6", RGB(249, 115, 22)});
 }
 
-static HFONT CreateClearTypeFont(int sizePx, int weight, const wchar_t *fontFamily = L"Segoe UI")
-{
-    return CreateFontW(-sizePx, 0, 0, 0, weight, FALSE, FALSE, FALSE,
-                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, fontFamily);
-}
-
-static void DrawRoundedRect(HDC hdc, const RECT &r, int radius, COLORREF bg, COLORREF border, int borderWidth = 1)
-{
-    HBRUSH brush = CreateSolidBrush(bg);
-    HPEN pen = (borderWidth > 0) ? CreatePen(PS_SOLID, borderWidth, border) : CreatePen(PS_NULL, 0, 0);
-    HGDIOBJ oldB = SelectObject(hdc, brush);
-    HGDIOBJ oldP = SelectObject(hdc, pen);
-    RoundRect(hdc, r.left, r.top, r.right, r.bottom, radius * 2, radius * 2);
-    SelectObject(hdc, oldB);
-    SelectObject(hdc, oldP);
-    DeleteObject(brush);
-    DeleteObject(pen);
-}
-
 // Helper to reliably find the active media session across all apps (Chrome, Spotify, Edge, etc.)
 static GlobalSystemMediaTransportControlsSession GetBestMediaSession(GlobalSystemMediaTransportControlsSessionManager mgr)
 {

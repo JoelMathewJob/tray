@@ -104,19 +104,6 @@ void UpdateThemeColors()
     g_theme.scrollTrack = isDark ? RGB(20, 22, 28) : RGB(218, 224, 234);
     g_theme.scrollThumb = isDark ? RGB(85, 92, 110) : RGB(140, 148, 164);
 }
-// Bulletproof path normalizer for VS Code & Web browsers
-static std::wstring NormalizeWinPath(const std::wstring &rawPath)
-{
-    std::wstring p = rawPath;
-    std::replace(p.begin(), p.end(), L'/', L'\\');
-    while (p.length() >= 3 && p[0] == L'\\' && iswalpha(p[1]) && (p[2] == L':' || p[2] == L'|'))
-        p.erase(0, 1);
-    if (p.length() >= 2 && iswalpha(p[0]) && p[1] == L'|')
-        p[1] = L':';
-    if (p.length() >= 2 && iswalpha(p[0]) && p[1] == L':')
-        p[0] = towupper(p[0]);
-    return p;
-}
 
 // Generate rich thumbnails instantly (Supports WebP, JPG, PNG natively via WIC)
 HICON GetIconOrThumbnail(const std::wstring &path, bool largeIcon)
